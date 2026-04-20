@@ -1,0 +1,12 @@
+{
+  "name": "ytdown-suite",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Full stack media downloader with Go backend and React dashboard",
+  "scripts": {
+    "start": "node scripts/start.js",
+    "setup": "node scripts/setup-runner.js",
+    "start:server": "go run ./cmd/server",
+    "start:web": "npx --yes serve web -l 3000 --no-clipboard"
+  }
+}
