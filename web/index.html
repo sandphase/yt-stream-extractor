@@ -12,7 +12,8 @@
     />
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
-      tailwind.config = {
+      window.tailwind = window.tailwind || {};
+      tailwind.config = window.tailwind.config = {
         theme: {
           extend: {
             fontFamily: { sans: ["Plus Jakarta Sans", "system-ui", "sans-serif"] },
