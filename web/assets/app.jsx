@@ -212,24 +212,51 @@ function triggerBrowserDownload(id, filename) {
   const isSimulated = !apiOrigin() || isNaN(Number(id)) || Number(id) > 1000000000;
 
   if (isSimulated) {
-    try {
-      const b64Data = ext === "mp3" ? SAMPLE_MP3_B64 : SAMPLE_MP4_B64;
-      const mediaBlob = base64ToBlob(b64Data, mimeType);
-      const blobUrl = URL.createObjectURL(mediaBlob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = cleanFilename;
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        link.remove();
-        URL.revokeObjectURL(blobUrl);
-      }, 3000);
-      return;
-    } catch (e) {
-      console.error("Error al generar descarga simulada", e);
-    }
+    // 1. Descargar archivo multimedia real de 30 segundos alojado en assets
+    const assetBase = typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")
+      ? "/demos/ytdown/assets/"
+      : "./assets/";
+    const samplePath = assetBase + (ext === "mp3" ? "sample.mp3" : "sample.mp4");
+
+    fetch(samplePath)
+      .then(res => {
+        if (!res.ok) throw new Error("Fallback to in-memory blob");
+        return res.blob();
+      })
+      .then(blob => {
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = cleanFilename;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(() => {
+          link.remove();
+          URL.revokeObjectURL(blobUrl);
+        }, 4000);
+      })
+      .catch(() => {
+        // Fallback en memoria si fallara la solicitud al recurso estático
+        try {
+          const b64Data = ext === "mp3" ? SAMPLE_MP3_B64 : SAMPLE_MP4_B64;
+          const mediaBlob = base64ToBlob(b64Data, mimeType);
+          const blobUrl = URL.createObjectURL(mediaBlob);
+          const link = document.createElement("a");
+          link.href = blobUrl;
+          link.download = cleanFilename;
+          link.style.display = "none";
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => {
+            link.remove();
+            URL.revokeObjectURL(blobUrl);
+          }, 4000);
+        } catch (e) {
+          console.error("Error al generar descarga simulada", e);
+        }
+      });
+    return;
   }
 
   // 3. Backend Go activo (descarga real del servidor local/remoto)
