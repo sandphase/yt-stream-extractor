@@ -161,20 +161,46 @@ function wsUrl() {
   return `${wsProto}://${u.host}/ws`;
 }
 
-async function api(path, options = {}) {
-  const base = apiOrigin();
-  if (base) {
-    try {
-      const response = await fetch(apiUrl(path), {
-        headers: { "Content-Type": "application/json" },
-        ...options,
-      });
-      if (response.ok) {
-        return await response.json();
-      }
-    } catch (e) {
-      console.warn("Remote API error, using client fallback", e);
+const completedAutoDownloads = new Set();
+
+function triggerBrowserDownload(id, filename) {
+  if (!id) return;
+  try {
+    const url = apiUrl(`/api/downloads/${id}/file`);
+    const link = document.createElement("a");
+    link.href = url;
+    if (filename) {
+      link.setAttribute("download", filename);
+    } else {
+      link.setAttribute("download", "");
     }
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      if (link.parentNode) link.parentNode.removeChild(link);
+    }, 1000);
+  } catch (err) {
+    console.error("Error triggering browser download:", err);
+  }
+}
+
+function autoDownloadCompletedJob(id, filename) {
+  if (!id || completedAutoDownloads.has(id)) return;
+  completedAutoDownloads.add(id);
+  triggerBrowserDownload(id, filename);
+}
+
+async function api(path, options = {}) {
+  try {
+    const response = await fetch(apiUrl(path), {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+    if (response.ok) {
+      return await response.json();
+    }
+  } catch (e) {
+    console.warn("Remote API error, using client fallback", e);
   }
 
   // Client Simulation Engine Fallback
@@ -315,7 +341,7 @@ function App() {
     loadStats();
     let ws = null;
     try {
-      if (typeof window !== "undefined" && window.__API_BASE__) {
+      if (typeof window !== "undefined") {
         ws = new WebSocket(wsUrl());
         ws.onmessage = (event) => {
           try {
@@ -325,7 +351,8 @@ function App() {
               loadHistory();
               loadStats();
               if (message.data.state === "completed") {
-                setToast({ type: "success", message: "DESCARGA COMPLETADA" });
+                setToast({ type: "success", message: "DESCARGA COMPLETADA. INICIANDO DESCARGA A TU PC..." });
+                autoDownloadCompletedJob(message.data.id);
               }
               if (message.data.state === "failed") {
                 setToast({ type: "error", message: message.data.message || "ERROR EN DESCARGA" });
@@ -467,7 +494,8 @@ function App() {
           saveLocalHistory(currentHist);
           loadHistory();
           loadStats();
-          setToast({ type: "success", message: "DESCARGA COMPLETADA" });
+          setToast({ type: "success", message: "DESCARGA COMPLETADA. INICIANDO DESCARGA A TU PC..." });
+          autoDownloadCompletedJob(jobId, `${jobTitle}.${chosenContainer}`);
         } else {
           setLiveJobs(prev => ({
             ...prev,
@@ -893,6 +921,17 @@ function App() {
                           <div className={`px-4 py-1 text-[10px] font-black border ${st === 'COMPLETED' ? 'border-emerald-500 text-emerald-500' : 'border-yt text-yt'}`}>
                             {st} {live?.progress ? `[${live.progress}%]` : ""}
                           </div>
+
+                          {st === 'COMPLETED' && (
+                            <a
+                              href={apiUrl(`/api/downloads/${item.id}/file`)}
+                              download={item.title ? `${item.title}.${item.container || 'mp4'}` : true}
+                              className="px-3 py-1 text-[10px] font-black border border-emerald-500 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all flex items-center gap-1 shadow-neon uppercase tracking-wider"
+                              title="Descargar archivo a tu PC"
+                            >
+                              <span>📥</span> DESCARGAR
+                            </a>
+                          )}
                           
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button

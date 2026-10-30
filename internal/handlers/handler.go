@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"ytdown/internal/config"
 	"ytdown/internal/models"
@@ -174,6 +175,64 @@ func (h *Handler) DownloadStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.jobs.Status(id))
+}
+
+func (h *Handler) DownloadFile(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	if idStr == "" {
+		idStr = r.URL.Query().Get("id")
+	}
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "Invalid download ID", http.StatusBadRequest)
+		return
+	}
+
+	record, err := h.repo.GetByID(id)
+	if err != nil {
+		http.Error(w, "Download record not found", http.StatusNotFound)
+		return
+	}
+
+	targetPath := record.FilePath
+	if targetPath == "" || !fileExists(targetPath) {
+		// Fallback: Si no está guardado el path exacto, buscar el archivo más reciente en OutputDir
+		dir := record.OutputDir
+		if dir == "" {
+			dir = h.config.DownloadDir
+		}
+		if dir != "" {
+			if files, err := os.ReadDir(dir); err == nil && len(files) > 0 {
+				var latestName string
+				var latestTime time.Time
+				for _, f := range files {
+					if f.IsDir() {
+						continue
+					}
+					if info, err := f.Info(); err == nil {
+						if info.ModTime().After(latestTime) {
+							latestTime = info.ModTime()
+							latestName = f.Name()
+						}
+					}
+				}
+				if latestName != "" {
+					targetPath = filepath.Join(dir, latestName)
+				}
+			}
+		}
+	}
+
+	if targetPath == "" || !fileExists(targetPath) {
+		http.Error(w, "File not found on server disk", http.StatusNotFound)
+		return
+	}
+
+	filename := filepath.Base(targetPath)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
+	http.ServeFile(w, r, targetPath)
 }
 
 func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
