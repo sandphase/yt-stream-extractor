@@ -165,23 +165,53 @@ const completedAutoDownloads = new Set();
 
 function triggerBrowserDownload(id, filename) {
   if (!id) return;
-  try {
-    const url = apiUrl(`/api/downloads/${id}/file`);
+  const isSimulated = !apiOrigin() && (String(id).length > 10 || isNaN(Number(id)));
+  if (isSimulated) {
+    const dummyBlob = new Blob([
+      `YTDown Studio - Archivo simulado: ${filename || id}\n`,
+      `====================================================\n`,
+      `El flujo de interfaz y cliente funciona correctamente.\n`,
+      `Para descargar archivos de video y audio reales desde YouTube con yt-dlp:\n`,
+      `Inicia el backend de Go con ./start.sh o start.bat en el puerto 8090.\n`
+    ], { type: "text/plain;charset=utf-8" });
+    const blobUrl = URL.createObjectURL(dummyBlob);
     const link = document.createElement("a");
-    link.href = url;
-    if (filename) {
-      link.setAttribute("download", filename);
-    } else {
-      link.setAttribute("download", "");
-    }
+    link.href = blobUrl;
+    link.download = filename ? `${filename}.txt` : `simulacion_${id}.txt`;
     document.body.appendChild(link);
     link.click();
     setTimeout(() => {
-      if (link.parentNode) link.parentNode.removeChild(link);
-    }, 1000);
-  } catch (err) {
-    console.error("Error triggering browser download:", err);
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+    }, 2000);
+    return;
   }
+
+  const url = apiUrl(`/api/downloads/${id}/file`);
+
+  // Método 1: Iframe oculto (evita que los navegadores bloqueen la descarga automática)
+  try {
+    const iframe = document.createElement("iframe");
+    iframe.style.display = "none";
+    iframe.src = url;
+    document.body.appendChild(iframe);
+    setTimeout(() => {
+      try { iframe.remove(); } catch(e){}
+    }, 60000);
+  } catch (err) {}
+
+  // Método 2: Enlace directo nativo
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    if (filename) link.setAttribute("download", filename);
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      try { link.remove(); } catch(e){}
+    }, 2000);
+  } catch (err) {}
 }
 
 function autoDownloadCompletedJob(id, filename) {
@@ -325,6 +355,7 @@ function App() {
   const [nasPath, setNasPath] = useState(() => localStorage.getItem("ytdown_output_dir") || "");
   const [toast, setToast] = useState(null);
   const [aiModal, setAiModal] = useState(null);
+  const [lastCompleted, setLastCompleted] = useState(null);
 
   const loadHistory = useCallback(async () => {
     const data = await api("/api/history");
@@ -347,22 +378,45 @@ function App() {
           try {
             const message = JSON.parse(event.data);
             if (message.type === "job_update" && message.data) {
-              setLiveJobs((prev) => ({ ...prev, [message.data.id]: message.data }));
+              const job = message.data;
+              setLiveJobs((prev) => ({ ...prev, [job.id]: { ...(prev[job.id] || {}), ...job } }));
               loadHistory();
               loadStats();
-              if (message.data.state === "completed") {
-                setToast({ type: "success", message: "DESCARGA COMPLETADA. INICIANDO DESCARGA A TU PC..." });
-                autoDownloadCompletedJob(message.data.id);
+              if (job.state === "completed") {
+                const fname = job.filePath ? job.filePath.split(/[\\/]/).pop() : (job.title || "archivo");
+                setLastCompleted({ id: job.id, title: job.title || fname, filename: fname });
+                setToast({ type: "success", message: `¡DESCARGA LISTA EN SERVIDOR! Guardando en tu equipo...` });
+                autoDownloadCompletedJob(job.id, fname);
               }
-              if (message.data.state === "failed") {
-                setToast({ type: "error", message: message.data.message || "ERROR EN DESCARGA" });
+              if (job.state === "failed") {
+                setToast({ type: "error", message: job.message || "ERROR EN DESCARGA" });
               }
             }
           } catch (e) {}
         };
       }
     } catch (e) {}
-    return () => { if (ws) ws.close(); };
+
+    const pollTimer = setInterval(async () => {
+      try {
+        const active = await api("/api/jobs/active");
+        if (Array.isArray(active) && active.length > 0) {
+          active.forEach(job => {
+            setLiveJobs(prev => ({ ...prev, [job.id]: { ...(prev[job.id] || {}), ...job } }));
+            if (job.state === "completed") {
+              const fname = job.filePath ? job.filePath.split(/[\\/]/).pop() : (job.title || "archivo");
+              setLastCompleted({ id: job.id, title: job.title || fname, filename: fname });
+              autoDownloadCompletedJob(job.id, fname);
+            }
+          });
+        }
+      } catch (e) {}
+    }, 2500);
+
+    return () => {
+      if (ws) ws.close();
+      clearInterval(pollTimer);
+    };
   }, [loadHistory, loadStats]);
 
   useEffect(() => {
@@ -420,7 +474,6 @@ function App() {
       const chosenQuality = formatMode === "video" ? (vf?.label || "1080p") : (af?.label || "320kbps");
       const chosenContainer = formatMode === "video" ? videoContainer : audioCodec;
       const jobTitle = analyzed?.title || url || "PROCESO_MULTIMEDIA";
-      const jobId = Date.now();
 
       const body = {
         url,
@@ -441,41 +494,67 @@ function App() {
         album,
       };
 
-      // Add to active live monitor immediately
+      setToast({ type: "success", message: "SOLICITANDO DESCARGA AL SERVIDOR..." });
+
+      // 1. Intentar enviar al backend real
+      let resp = null;
+      try {
+        resp = await api("/api/downloads", { method: "POST", body: JSON.stringify(body) });
+      } catch (err) {
+        console.warn("Backend real no disponible", err);
+      }
+
+      // Si el backend real respondió con un ID numérico de base de datos
+      if (resp && resp.id && resp.id < 1000000000) {
+        const realId = resp.id;
+        const newJob = {
+          id: realId,
+          title: jobTitle,
+          progress: 5,
+          speedMiBs: 0,
+          state: "processing",
+          format: formatMode,
+          quality: chosenQuality,
+          url,
+          container: chosenContainer,
+          createdAt: new Date().toISOString()
+        };
+        setLiveJobs(prev => ({ ...prev, [realId]: newJob }));
+        setToast({ type: "success", message: `PROCESANDO EN SERVIDOR (TRABAJO #${realId})` });
+        return;
+      }
+
+      // 2. Modo fallback simulación (solo cuando no hay backend Go corriendo)
+      const simId = Date.now();
       const newJob = {
-        id: jobId,
+        id: simId,
         title: jobTitle,
-        progress: 8,
+        progress: 10,
         speedMiBs: 16.4,
         state: "processing",
         format: formatMode,
         quality: chosenQuality,
         url,
         container: chosenContainer,
-        aiSeparateStems: aiSeparate,
-        aiTranscribe: aiTranscribe,
-        aiGenerateBRoll: aiBroll,
         createdAt: new Date().toISOString()
       };
+      setLiveJobs(prev => ({ ...prev, [simId]: newJob }));
 
-      setLiveJobs(prev => ({ ...prev, [jobId]: newJob }));
-      setToast({ type: "success", message: "PROCESO ENCOLADO" });
-
-      // Animate progress to completion
-      let currentProgress = 8;
+      let currentProgress = 10;
       const interval = setInterval(() => {
-        currentProgress += Math.floor(Math.random() * 15) + 10;
+        currentProgress += Math.floor(Math.random() * 15) + 12;
         if (currentProgress >= 100) {
           currentProgress = 100;
           clearInterval(interval);
           setLiveJobs(prev => {
             const next = { ...prev };
-            delete next[jobId];
+            delete next[simId];
             return next;
           });
 
+          const filename = `${jobTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)}.${chosenContainer}`;
           const histItem = {
-            id: jobId,
+            id: simId,
             url: url,
             sourceUrl: url,
             title: jobTitle,
@@ -486,7 +565,7 @@ function App() {
             aiSeparateStems: aiSeparate,
             aiTranscribe: aiTranscribe,
             aiGenerateBRoll: aiBroll,
-            filePath: `/media/vault/${jobTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)}.${chosenContainer}`,
+            filePath: `/media/vault/${filename}`,
             createdAt: new Date().toISOString()
           };
           const currentHist = getLocalHistory();
@@ -494,21 +573,20 @@ function App() {
           saveLocalHistory(currentHist);
           loadHistory();
           loadStats();
-          setToast({ type: "success", message: "DESCARGA COMPLETADA. INICIANDO DESCARGA A TU PC..." });
-          autoDownloadCompletedJob(jobId, `${jobTitle}.${chosenContainer}`);
+          setLastCompleted({ id: simId, title: jobTitle, filename: filename });
+          setToast({ type: "success", message: "DESCARGA COMPLETADA" });
+          autoDownloadCompletedJob(simId, filename);
         } else {
           setLiveJobs(prev => ({
             ...prev,
-            [jobId]: {
-              ...prev[jobId],
+            [simId]: {
+              ...prev[simId],
               progress: currentProgress,
               speedMiBs: 15.2 + Math.random() * 8.5
             }
           }));
         }
-      }, 350);
-
-      await api("/api/downloads", { method: "POST", body: JSON.stringify(body) }).catch(() => {});
+      }, 400);
     } catch (err) {
       setError(err.message);
       setToast({ type: "error", message: err.message });
@@ -673,6 +751,28 @@ function App() {
         </header>
 
         <main className="flex-1 px-10 py-10">
+          {lastCompleted && (
+            <div className="mb-8 p-5 border-2 border-emerald-500 bg-emerald-950/80 rounded-xl shadow-neon flex items-center justify-between gap-4 animate-pop-in">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                  <span className="text-xs font-black text-emerald-400 tracking-widest uppercase">¡Descarga lista en el servidor!</span>
+                </div>
+                <div className="text-base font-black text-white mt-1 uppercase">{lastCompleted.title}</div>
+                <div className="text-xs text-zinc-400 mt-0.5">Si la descarga no inició automáticamente en tu navegador, pulsa el botón:</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => triggerBrowserDownload(lastCompleted.id, lastCompleted.filename)}
+                  className="px-6 py-3 bg-emerald-500 text-black font-black text-xs uppercase tracking-widest hover:bg-emerald-400 transition-all rounded shadow-neon flex items-center gap-2 cursor-pointer"
+                >
+                  <span>📥</span> GUARDAR EN MI PC
+                </button>
+                <button onClick={() => setLastCompleted(null)} className="text-zinc-500 hover:text-white text-lg font-bold px-2 cursor-pointer">✕</button>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="mb-8 animate-glitch border-2 border-yt bg-yt/10 p-6 text-sm font-black text-yt shadow-neon">
               [SYSTEM_FAILURE]: {error.toUpperCase()}
@@ -923,14 +1023,13 @@ function App() {
                           </div>
 
                           {st === 'COMPLETED' && (
-                            <a
-                              href={apiUrl(`/api/downloads/${item.id}/file`)}
-                              download={item.title ? `${item.title}.${item.container || 'mp4'}` : true}
-                              className="px-3 py-1 text-[10px] font-black border border-emerald-500 bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500 hover:text-black transition-all flex items-center gap-1 shadow-neon uppercase tracking-wider"
+                            <button
+                              onClick={() => triggerBrowserDownload(item.id, item.title ? `${item.title}.${item.container || 'mp4'}` : undefined)}
+                              className="px-3.5 py-1.5 text-[10px] font-black border border-emerald-500 bg-emerald-500 text-black hover:bg-emerald-400 transition-all flex items-center gap-1.5 shadow-neon uppercase tracking-wider rounded cursor-pointer"
                               title="Descargar archivo a tu PC"
                             >
                               <span>📥</span> DESCARGAR
-                            </a>
+                            </button>
                           )}
                           
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
