@@ -128,6 +128,7 @@ func (j *JobManager) process(recordID int64) {
 	}
 
 	var title string
+	var lastErrorMsg string
 	lastPct := 5
 	var lastSpd float64
 	var lastETA string
@@ -143,6 +144,9 @@ func (j *JobManager) process(recordID int64) {
 				line = strings.TrimSpace(line)
 				if line == "" {
 					continue
+				}
+				if strings.Contains(line, "ERROR:") || strings.Contains(line, "Sign in to confirm") {
+					lastErrorMsg = line
 				}
 				if strings.Contains(line, "Destination:") {
 					title = extractTitleFromLine(line)
@@ -194,7 +198,11 @@ func (j *JobManager) process(recordID int64) {
 	}
 
 	if waitErr != nil {
-		j.fail(recordID, waitErr)
+		if lastErrorMsg != "" {
+			j.fail(recordID, fmt.Errorf("%s", lastErrorMsg))
+		} else {
+			j.fail(recordID, waitErr)
+		}
 		return
 	}
 

@@ -141,6 +141,9 @@ function apiOrigin() {
   if (typeof window !== "undefined" && window.__API_BASE__) {
     return String(window.__API_BASE__).replace(/\/$/, "");
   }
+  if (typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")) {
+    return "/demos/ytdown";
+  }
   return "";
 }
 
@@ -152,13 +155,17 @@ function apiUrl(path) {
 
 function wsUrl() {
   const base = apiOrigin();
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
   if (!base) {
-    const wsProto = location.protocol === "https:" ? "wss" : "ws";
     return `${wsProto}://${location.host}/ws`;
   }
-  const u = new URL(base);
-  const wsProto = u.protocol === "https:" ? "wss" : "ws";
-  return `${wsProto}://${u.host}/ws`;
+  if (base.startsWith("http://") || base.startsWith("https://")) {
+    const u = new URL(base);
+    const p = u.protocol === "https:" ? "wss" : "ws";
+    return `${p}://${u.host}/ws`;
+  }
+  const cleanBase = base.replace(/\/$/, "");
+  return `${wsProto}://${location.host}${cleanBase}/ws`;
 }
 
 const completedAutoDownloads = new Set();
@@ -208,23 +215,56 @@ function triggerBrowserDownload(id, filename) {
   const safeBase = basePart.replace(/[^\w\s\-\(\)\[\]]/gi, "_").replace(/\s+/g, "_").trim() || `media_${id}`;
   cleanFilename = `${safeBase}.${extPart}`;
 
-  // 2. Comprobar si estamos en modo demo cliente sin backend Go local activo
-  const isSimulated = !apiOrigin() || isNaN(Number(id)) || Number(id) > 1000000000;
+  // 2. Si es una descarga procesada por el backend Go real
+  const isRealBackendId = Number(id) > 0 && Number(id) < 1000000000;
+  if (isRealBackendId) {
+    const url = apiUrl(`/api/downloads/${id}/file`);
+    try {
+      const link = document.createElement("a");
+      link.href = url;
+      if (cleanFilename) link.setAttribute("download", cleanFilename);
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        try { link.remove(); } catch(e){}
+      }, 2000);
+      return;
+    } catch (err) {
+      console.warn("Direct download error", err);
+    }
+  }
 
-  if (isSimulated) {
-    // 1. Descargar archivo multimedia real de 30 segundos alojado en assets
-    const assetBase = typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")
-      ? "/demos/ytdown/assets/"
-      : "./assets/";
-    const samplePath = assetBase + (ext === "mp3" ? "sample.mp3" : "sample.mp4");
+  // 3. Fallback para modo desconectado o tarjetas de muestra estáticas
+  const assetBase = typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")
+    ? "/demos/ytdown/assets/"
+    : "./assets/";
+  const samplePath = assetBase + (ext === "mp3" ? "sample.mp3" : "sample.mp4");
 
-    fetch(samplePath)
-      .then(res => {
-        if (!res.ok) throw new Error("Fallback to in-memory blob");
-        return res.blob();
-      })
-      .then(blob => {
-        const blobUrl = URL.createObjectURL(blob);
+  fetch(samplePath)
+    .then(res => {
+      if (!res.ok) throw new Error("Fallback to in-memory blob");
+      return res.blob();
+    })
+    .then(blob => {
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = cleanFilename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        link.remove();
+        URL.revokeObjectURL(blobUrl);
+      }, 4000);
+    })
+    .catch(() => {
+      // Fallback en memoria si fallara la solicitud al recurso estático
+      try {
+        const b64Data = ext === "mp3" ? SAMPLE_MP3_B64 : SAMPLE_MP4_B64;
+        const mediaBlob = base64ToBlob(b64Data, mimeType);
+        const blobUrl = URL.createObjectURL(mediaBlob);
         const link = document.createElement("a");
         link.href = blobUrl;
         link.download = cleanFilename;
@@ -235,56 +275,10 @@ function triggerBrowserDownload(id, filename) {
           link.remove();
           URL.revokeObjectURL(blobUrl);
         }, 4000);
-      })
-      .catch(() => {
-        // Fallback en memoria si fallara la solicitud al recurso estático
-        try {
-          const b64Data = ext === "mp3" ? SAMPLE_MP3_B64 : SAMPLE_MP4_B64;
-          const mediaBlob = base64ToBlob(b64Data, mimeType);
-          const blobUrl = URL.createObjectURL(mediaBlob);
-          const link = document.createElement("a");
-          link.href = blobUrl;
-          link.download = cleanFilename;
-          link.style.display = "none";
-          document.body.appendChild(link);
-          link.click();
-          setTimeout(() => {
-            link.remove();
-            URL.revokeObjectURL(blobUrl);
-          }, 4000);
-        } catch (e) {
-          console.error("Error al generar descarga simulada", e);
-        }
-      });
-    return;
-  }
-
-  // 3. Backend Go activo (descarga real del servidor local/remoto)
-  const url = apiUrl(`/api/downloads/${id}/file`);
-
-  // Metodo 1: Iframe oculto (evita que los navegadores bloqueen la descarga automatica)
-  try {
-    const iframe = document.createElement("iframe");
-    iframe.style.display = "none";
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    setTimeout(() => {
-      try { iframe.remove(); } catch(e){}
-    }, 60000);
-  } catch (err) {}
-
-  // Metodo 2: Enlace directo nativo
-  try {
-    const link = document.createElement("a");
-    link.href = url;
-    if (cleanFilename) link.setAttribute("download", cleanFilename);
-    link.style.display = "none";
-    document.body.appendChild(link);
-    link.click();
-    setTimeout(() => {
-      try { link.remove(); } catch(e){}
-    }, 2000);
-  } catch (err) {}
+      } catch (e) {
+        console.error("Error al generar descarga simulada", e);
+      }
+    });
 }
 
 function autoDownloadCompletedJob(id, filename) {

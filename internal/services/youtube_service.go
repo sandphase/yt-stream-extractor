@@ -1,9 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -20,13 +22,46 @@ func NewYouTubeService(path string) *YouTubeService {
 	return &YouTubeService{binPath: path}
 }
 
+func (s *YouTubeService) getCookiesArgs() []string {
+	candidates := []string{
+		"./data/cookies.txt",
+		"./cookies.txt",
+		"/var/www/nullphasedev/apps/yt-stream-extractor/data/cookies.txt",
+		"/var/www/nullphasedev/apps/yt-stream-extractor/cookies.txt",
+	}
+	if envPath := strings.TrimSpace(os.Getenv("YT_COOKIES_PATH")); envPath != "" {
+		candidates = append([]string{envPath}, candidates...)
+	}
+	for _, p := range candidates {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return []string{"--cookies", p}
+		}
+	}
+	return nil
+}
+
 func (s *YouTubeService) Analyze(url string) (models.AnalyzeResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, s.binPath, "-J", "--no-warnings", "--skip-download", url)
+	analyzeArgs := []string{"-J", "--no-warnings", "--skip-download", "--no-playlist"}
+	if nodePath, err := exec.LookPath("node"); err == nil && nodePath != "" {
+		analyzeArgs = append(analyzeArgs, "--js-runtimes", fmt.Sprintf("node:%s", nodePath))
+	}
+	if cookieArgs := s.getCookiesArgs(); len(cookieArgs) > 0 {
+		analyzeArgs = append(analyzeArgs, cookieArgs...)
+	}
+	analyzeArgs = append(analyzeArgs, url)
+
+	cmd := exec.CommandContext(ctx, s.binPath, analyzeArgs...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		errStr := strings.TrimSpace(stderr.String())
+		if errStr != "" {
+			return models.AnalyzeResponse{}, fmt.Errorf("yt-dlp analyze failed: %s", errStr)
+		}
 		return models.AnalyzeResponse{}, fmt.Errorf("yt-dlp analyze failed: %w", err)
 	}
 
@@ -68,7 +103,18 @@ func (s *YouTubeService) BuildDownloadArgs(rec models.DownloadRecord, outDir str
 		"--newline",
 		"--no-warnings",
 		"--continue",
+		"--no-playlist",
 		"-o", outputTemplate,
+	}
+
+	if nodePath, err := exec.LookPath("node"); err == nil && nodePath != "" {
+		args = append(args, "--js-runtimes", fmt.Sprintf("node:%s", nodePath))
+	}
+	if cookieArgs := s.getCookiesArgs(); len(cookieArgs) > 0 {
+		args = append(args, cookieArgs...)
+	}
+	if ffmpegPath, err := exec.LookPath("ffmpeg"); err == nil && ffmpegPath != "" {
+		args = append(args, "--ffmpeg-location", ffmpegPath)
 	}
 
 	if rec.AddMetadata {
