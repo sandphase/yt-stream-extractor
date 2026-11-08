@@ -17,9 +17,10 @@ import (
 type JobStatus struct {
 	ID         int64   `json:"id"`
 	State      string  `json:"state"`
+	Title      string  `json:"title,omitempty"`
 	Progress   int     `json:"progress"`
 	Message    string  `json:"message"`
-	FilePath   string  `json:"filePath,omitempty"`
+	FilePath   string  `json:"-"`
 	SpeedMiBs  float64 `json:"speedMiBs,omitempty"`
 	ETADisplay string  `json:"etaDisplay,omitempty"`
 }
@@ -102,91 +103,153 @@ func (j *JobManager) process(recordID int64) {
 	j.setStatus(recordID, JobStatus{ID: recordID, State: "processing", Progress: 5, Message: "Starting download..."})
 	_ = j.repo.UpdateStatus(recordID, "processing", "", "", "", 0)
 
-	args := j.yt.BuildDownloadArgs(record, outDir)
-	cmd := exec.Command(j.yt.binPath, args...)
-	configureProcGroup(cmd)
-	cmd.Stderr = cmd.Stdout
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		j.fail(recordID, err)
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		j.fail(recordID, err)
-		return
-	}
-
-	j.setRunning(recordID, cmd, outDir)
-	defer j.clearRunning(recordID)
-
-	if recCancel, _ := j.repo.GetByID(recordID); recCancel.Status == "canceled" {
-		_ = KillProcessTree(cmd.Process.Pid)
-		CleanupPartialDownloads(outDir)
-		_ = cmd.Wait()
-		return
-	}
-
 	var title string
 	var lastErrorMsg string
-	lastPct := 5
-	var lastSpd float64
-	var lastETA string
-	buf := make([]byte, 2048)
-	remainder := ""
-	for {
-		n, readErr := stdout.Read(buf)
-		if n > 0 {
-			chunk := remainder + string(buf[:n])
-			lines := strings.Split(chunk, "\n")
-			remainder = lines[len(lines)-1]
-			for _, line := range lines[:len(lines)-1] {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
+	var detectedDest string
+	jobStartTime := time.Now().Add(-5 * time.Second)
+
+	attemptDownload := func(useProxy bool) error {
+		args := j.yt.BuildDownloadArgs(record, outDir, useProxy)
+		cmd := exec.Command(j.yt.binPath, args...)
+		configureProcGroup(cmd)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = cmd.Stdout
+
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+
+		j.setRunning(recordID, cmd, outDir)
+		defer j.clearRunning(recordID)
+
+		if recCancel, _ := j.repo.GetByID(recordID); recCancel.Status == "canceled" {
+			_ = KillProcessTree(cmd.Process.Pid)
+			CleanupPartialDownloads(outDir)
+			_ = cmd.Wait()
+			return fmt.Errorf("canceled")
+		}
+
+		lastPct := 5
+		var lastSpd float64
+		var lastETA string
+		buf := make([]byte, 2048)
+		remainder := ""
+		for {
+			n, readErr := stdout.Read(buf)
+			if n > 0 {
+				chunk := remainder + string(buf[:n])
+				lines := strings.Split(chunk, "\n")
+				remainder = lines[len(lines)-1]
+				for _, line := range lines[:len(lines)-1] {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					if strings.Contains(line, "ERROR:") || strings.Contains(line, "Sign in to confirm") || strings.Contains(line, "LOGIN_REQUIRED") || strings.Contains(line, "Please sign in") {
+						lastErrorMsg = line
+					}
+					if strings.Contains(line, "Destination:") {
+						destPath := extractTitleFromLine(line)
+						if destPath != "" {
+							detectedDest = destPath
+							title = strings.TrimSuffix(filepath.Base(destPath), filepath.Ext(destPath))
+						}
+					}
+					if !strings.Contains(line, "[download]") && !strings.Contains(line, "Destination:") && !strings.Contains(line, "Merger") {
+						continue
+					}
+					pct, hasPct, spd, eta := ParseYtDlpProgressLine(line)
+					if hasPct {
+						lastPct = pct
+					}
+					if spd > 0 {
+						lastSpd = spd
+					}
+					if eta != "" {
+						lastETA = eta
+					}
+					legacy := parseProgress(line)
+					if legacy >= 0 && !hasPct {
+						lastPct = legacy
+					}
+					j.setStatus(recordID, JobStatus{
+						ID:         recordID,
+						State:      "processing",
+						Progress:   lastPct,
+						Message:    line,
+						SpeedMiBs:  lastSpd,
+						ETADisplay: lastETA,
+					})
 				}
-				if strings.Contains(line, "ERROR:") || strings.Contains(line, "Sign in to confirm") {
-					lastErrorMsg = line
+			}
+			if readErr != nil {
+				if readErr != io.EOF && !j.isCanceledOrPausedInDB(recordID) {
+					return readErr
 				}
-				if strings.Contains(line, "Destination:") {
-					title = extractTitleFromLine(line)
-				}
-				if !strings.Contains(line, "[download]") && !strings.Contains(line, "Destination:") && !strings.Contains(line, "Merger") {
-					continue
-				}
-				pct, hasPct, spd, eta := ParseYtDlpProgressLine(line)
-				if hasPct {
-					lastPct = pct
-				}
-				if spd > 0 {
-					lastSpd = spd
-				}
-				if eta != "" {
-					lastETA = eta
-				}
-				legacy := parseProgress(line)
-				if legacy >= 0 && !hasPct {
-					lastPct = legacy
-				}
-				j.setStatus(recordID, JobStatus{
-					ID:         recordID,
-					State:      "processing",
-					Progress:   lastPct,
-					Message:    line,
-					SpeedMiBs:  lastSpd,
-					ETADisplay: lastETA,
-				})
+				break
 			}
 		}
-		if readErr != nil {
-			if readErr != io.EOF && !j.isCanceledOrPausedInDB(recordID) {
-				j.fail(recordID, readErr)
+
+		waitErr := cmd.Wait()
+		recFinal, _ := j.repo.GetByID(recordID)
+		switch strings.ToLower(recFinal.Status) {
+		case "canceled":
+			return fmt.Errorf("canceled")
+		case "paused":
+			return fmt.Errorf("paused")
+		}
+
+		if waitErr != nil {
+			if lastErrorMsg != "" {
+				return fmt.Errorf("%s", lastErrorMsg)
 			}
-			break
+			return waitErr
+		}
+		return nil
+	}
+
+	// 1. Motor primario de alta velocidad (Invidious Stream Engine + FFmpeg)
+	invPath, invTitle, invErr := j.yt.DownloadViaInvidious(
+		record,
+		outDir,
+		func() bool { return j.isCanceledOrPausedInDB(recordID) },
+		func(pct int, msg string, spd float64, eta string) {
+			j.setStatus(recordID, JobStatus{
+				ID:         recordID,
+				State:      "processing",
+				Title:      record.Title,
+				Progress:   pct,
+				Message:    msg,
+				SpeedMiBs:  spd,
+				ETADisplay: eta,
+			})
+		},
+	)
+	if invErr == nil && invPath != "" {
+		detectedDest = invPath
+		title = invTitle
+		err = nil
+	} else {
+		recCheck, _ := j.repo.GetByID(recordID)
+		if recCheck.Status == "canceled" || recCheck.Status == "paused" {
+			return
+		}
+		// 2. Fallback a yt-dlp (usando túnel SOCKS5 primero si está activo)
+		if IsSocksProxyAvailable() {
+			err = attemptDownload(true)
+			if err != nil && !j.isCanceledOrPausedInDB(recordID) {
+				detectedDest = ""
+				lastErrorMsg = ""
+				err = attemptDownload(false)
+			}
+		} else {
+			err = attemptDownload(false)
 		}
 	}
 
-	waitErr := cmd.Wait()
 	recFinal, _ := j.repo.GetByID(recordID)
 	switch strings.ToLower(recFinal.Status) {
 	case "canceled":
@@ -197,17 +260,42 @@ func (j *JobManager) process(recordID int64) {
 		return
 	}
 
-	if waitErr != nil {
-		if lastErrorMsg != "" {
-			j.fail(recordID, fmt.Errorf("%s", lastErrorMsg))
-		} else {
-			j.fail(recordID, waitErr)
-		}
+	if err != nil {
+		j.fail(recordID, fmt.Errorf("No se pudo procesar este enlace en este momento. Verifica que el video sea público e inténtalo de nuevo."))
 		return
 	}
 
-	filePath := detectLatestFile(outDir)
-	_ = j.repo.UpdateStatus(recordID, "completed", filePath, "", title, 0)
+	filePath := ""
+	if detectedDest != "" {
+		if fi, err := os.Stat(detectedDest); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			filePath = detectedDest
+		}
+	}
+	if filePath == "" {
+		filePath = findJobOutputFile(outDir, record.URL, jobStartTime)
+	}
+	if filePath == "" {
+		filePath = detectLatestFileAfter(outDir, jobStartTime)
+	}
+	if filePath == "" {
+		// Fallback por si la fecha en sistema no coincidiera exactamente
+		filePath = detectLatestFile(outDir)
+	}
+
+	if filePath == "" {
+		j.fail(recordID, fmt.Errorf("No se pudo generar el archivo multimedia. Intenta nuevamente."))
+		return
+	}
+
+	cleanTitle := title
+	if cleanTitle == "" {
+		base := filepath.Base(filePath)
+		cleanTitle = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	if cleanTitle == "" {
+		cleanTitle = record.Title
+	}
+	_ = j.repo.UpdateStatus(recordID, "completed", filePath, "", cleanTitle, 0)
 
 	// Post-procesamiento IA
 	if filePath != "" {
@@ -225,7 +313,7 @@ func (j *JobManager) process(recordID int64) {
 		}
 	}
 
-	j.setStatus(recordID, JobStatus{ID: recordID, State: "completed", Progress: 100, Message: "Download & AI Processing completed", FilePath: filePath})
+	j.setStatus(recordID, JobStatus{ID: recordID, State: "completed", Title: cleanTitle, Progress: 100, Message: "Download & AI Processing completed", FilePath: filePath})
 }
 
 func (j *JobManager) isCanceledOrPausedInDB(id int64) bool {
@@ -256,10 +344,25 @@ func (j *JobManager) fail(id int64, err error) {
 
 func (j *JobManager) Status(recordID int64) JobStatus {
 	j.mu.RLock()
-	defer j.mu.RUnlock()
-
 	if v, ok := j.status[recordID]; ok {
+		j.mu.RUnlock()
 		return v
+	}
+	j.mu.RUnlock()
+
+	if rec, err := j.repo.GetByID(recordID); err == nil {
+		prog := 0
+		if rec.Status == "completed" {
+			prog = 100
+		}
+		return JobStatus{
+			ID:       recordID,
+			State:    rec.Status,
+			Title:    rec.Title,
+			Progress: prog,
+			Message:  rec.ErrorMsg,
+			FilePath: rec.FilePath,
+		}
 	}
 	return JobStatus{ID: recordID, State: "unknown", Progress: 0, Message: "No active job"}
 }
@@ -353,6 +456,10 @@ func parseProgress(line string) int {
 }
 
 func detectLatestFile(dir string) string {
+	return detectLatestFileAfter(dir, time.Time{})
+}
+
+func detectLatestFileAfter(dir string, after time.Time) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
@@ -364,8 +471,16 @@ func detectLatestFile(dir string) string {
 		if entry.IsDir() {
 			continue
 		}
+		// Ignorar fragmentos temporales o placeholders
+		name := entry.Name()
+		if strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".ytdl") || strings.HasPrefix(name, "Stream_Extraction_") {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
+			continue
+		}
+		if !after.IsZero() && !info.ModTime().After(after) {
 			continue
 		}
 		if info.ModTime().After(newestTime) {
@@ -374,6 +489,48 @@ func detectLatestFile(dir string) string {
 		}
 	}
 	return newest
+}
+
+func findJobOutputFile(dir string, rawUrl string, after time.Time) string {
+	videoID := extractVideoIDFromURL(rawUrl)
+	if videoID == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.Contains(name, videoID) && !strings.HasSuffix(name, ".part") && !strings.HasSuffix(name, ".ytdl") {
+			return filepath.Join(dir, name)
+		}
+	}
+	return ""
+}
+
+func extractVideoIDFromURL(rawUrl string) string {
+	if idx := strings.Index(rawUrl, "v="); idx != -1 {
+		part := rawUrl[idx+2:]
+		if amp := strings.Index(part, "&"); amp != -1 {
+			part = part[:amp]
+		}
+		return part
+	}
+	if strings.Contains(rawUrl, "youtu.be/") {
+		parts := strings.Split(rawUrl, "youtu.be/")
+		if len(parts) > 1 {
+			part := parts[1]
+			if q := strings.Index(part, "?"); q != -1 {
+				part = part[:q]
+			}
+			return part
+		}
+	}
+	return ""
 }
 
 func extractTitleFromLine(line string) string {
@@ -395,4 +552,29 @@ func (j *JobManager) ActiveJobs() []JobStatus {
 		}
 	}
 	return out
+}
+
+func cleanSafeFilename(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "descarga"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '(' || r == ')' {
+			b.WriteRune(r)
+		} else if r == ' ' {
+			b.WriteRune('_')
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	res := strings.Trim(b.String(), "_")
+	for strings.Contains(res, "__") {
+		res = strings.ReplaceAll(res, "__", "_")
+	}
+	if res == "" {
+		return "descarga"
+	}
+	return res
 }
