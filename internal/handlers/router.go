@@ -15,6 +15,8 @@ func NewRouter(h *Handler, _ config.Config) http.Handler {
 	})
 
 	mux.HandleFunc("POST /api/analyze", h.Analyze)
+	mux.HandleFunc("GET /api/session/status", h.SessionStatus)
+	mux.HandleFunc("POST /api/session/cookies", h.UpdateCookies)
 	mux.HandleFunc("POST /api/downloads", h.QueueDownload)
 	mux.HandleFunc("POST /api/downloads/batch", h.QueueBatch)
 	mux.HandleFunc("GET /api/downloads/{id}/file", h.DownloadFile)

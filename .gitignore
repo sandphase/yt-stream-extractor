@@ -4,6 +4,9 @@
 # --- Datos de Usuario (IMPORTANTE) ---
 downloads/
 data/
+cookies.txt
+*.cookies
+*.txt.bak
 *.db
 *.db-journal
 *.sqlite3

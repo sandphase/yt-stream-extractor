@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"ytdown/internal/config"
 	"ytdown/internal/models"
@@ -50,10 +49,28 @@ func (h *Handler) Analyze(w http.ResponseWriter, r *http.Request) {
 
 	data, err := h.youtube.Analyze(body.URL)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		errStr := err.Error()
+		code := "EXTRACTION_ERROR"
+		if strings.Contains(errStr, "inicio de sesión") || strings.Contains(errStr, "antibot") || strings.Contains(errStr, "Sign in") || strings.Contains(errStr, "bot") {
+			code = "AUTH_REQUIRED"
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": errStr,
+			"code":  code,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
+}
+
+func (h *Handler) SessionStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ready",
+	})
+}
+
+func (h *Handler) UpdateCookies(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "Operación deshabilitada por seguridad"})
 }
 
 func (h *Handler) QueueDownload(w http.ResponseWriter, r *http.Request) {
@@ -80,13 +97,14 @@ func (h *Handler) QueueDownload(w http.ResponseWriter, r *http.Request) {
 		SourceURL:       req.URL,
 		SourcePlatform:  detectPlatform(req.URL),
 		URL:             req.URL,
+		Title:           strings.TrimSpace(req.Title),
 		Format:          req.Format,
 		Container:       req.Container,
 		Quality:         req.Quality,
 		YTFormatID:      strings.TrimSpace(req.YTFormatID),
 		VideoFPS:        req.VideoFPS,
 		AudioBitrate:    req.AudioBitrate,
-		OutputDir:       strings.TrimSpace(req.OutputDir),
+		OutputDir:       "",
 		ClipStart:       strings.TrimSpace(req.ClipStart),
 		ClipEnd:         strings.TrimSpace(req.ClipEnd),
 		AddMetadata:     req.AddMetadata,
@@ -145,7 +163,7 @@ func (h *Handler) QueueBatch(w http.ResponseWriter, r *http.Request) {
 			Format:          firstNotEmpty(req.Format, "video"),
 			Container:       req.Container,
 			Quality:         firstNotEmpty(req.Quality, "best"),
-			OutputDir:       req.OutputDir,
+			OutputDir:       "",
 			ClipStart:       req.ClipStart,
 			ClipEnd:         req.ClipEnd,
 			AddMetadata:     req.Metadata,
@@ -177,6 +195,31 @@ func (h *Handler) DownloadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.jobs.Status(id))
 }
 
+func cleanSafeFilename(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "descarga"
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' || r == '(' || r == ')' {
+			b.WriteRune(r)
+		} else if r == ' ' {
+			b.WriteRune('_')
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	res := strings.Trim(b.String(), "_")
+	for strings.Contains(res, "__") {
+		res = strings.ReplaceAll(res, "__", "_")
+	}
+	if res == "" {
+		return "descarga"
+	}
+	return res
+}
+
 func (h *Handler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	if idStr == "" {
@@ -189,47 +232,50 @@ func (h *Handler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	record, err := h.repo.GetByID(id)
-	if err != nil {
-		http.Error(w, "Download record not found", http.StatusNotFound)
-		return
-	}
+	var targetPath string
+	var dlName string
+	isAudio := false
 
-	targetPath := record.FilePath
-	if targetPath == "" || !fileExists(targetPath) {
-		// Fallback: Si no está guardado el path exacto, buscar el archivo más reciente en OutputDir
-		dir := record.OutputDir
-		if dir == "" {
-			dir = h.config.DownloadDir
+	if err == nil {
+		targetPath = record.FilePath
+		isAudio = strings.ToLower(record.Format) == "audio" || strings.ToLower(record.Container) == "mp3"
+		ext := "mp4"
+		if isAudio {
+			ext = "mp3"
 		}
-		if dir != "" {
-			if files, err := os.ReadDir(dir); err == nil && len(files) > 0 {
-				var latestName string
-				var latestTime time.Time
-				for _, f := range files {
-					if f.IsDir() {
-						continue
-					}
-					if info, err := f.Info(); err == nil {
-						if info.ModTime().After(latestTime) {
-							latestTime = info.ModTime()
-							latestName = f.Name()
-						}
-					}
-				}
-				if latestName != "" {
-					targetPath = filepath.Join(dir, latestName)
-				}
-			}
+		if realExt := strings.TrimPrefix(filepath.Ext(targetPath), "."); realExt != "" {
+			ext = realExt
+		} else if record.Container != "" {
+			ext = strings.ToLower(record.Container)
+		}
+		if record.Title != "" {
+			dlName = fmt.Sprintf("%s.%s", cleanSafeFilename(record.Title), ext)
+		}
+		if targetPath == "" || !fileExists(targetPath) {
+			http.Error(w, "El archivo solicitado no se encuentra en el disco del servidor", http.StatusNotFound)
+			return
+		}
+	} else {
+		// IDs de tarjetas estáticas de demostración (ej. 101, 102, 103)
+		if id == 101 || id == 103 {
+			isAudio = false
+			dlName = fmt.Sprintf("demo_video_%d.mp4", id)
+			targetPath = "./web/assets/sample.mp4"
+		} else {
+			isAudio = true
+			dlName = fmt.Sprintf("demo_audio_%d.mp3", id)
+			targetPath = "./web/assets/sample.mp3"
+		}
+		if !fileExists(targetPath) {
+			http.Error(w, "Archivo demo no disponible", http.StatusNotFound)
+			return
 		}
 	}
 
-	if targetPath == "" || !fileExists(targetPath) {
-		http.Error(w, "File not found on server disk", http.StatusNotFound)
-		return
+	if dlName == "" {
+		dlName = filepath.Base(targetPath)
 	}
-
-	filename := filepath.Base(targetPath)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", dlName))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 	http.ServeFile(w, r, targetPath)
@@ -240,6 +286,13 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	for i := range items {
+		if items[i].FilePath != "" {
+			if fi, statErr := os.Stat(items[i].FilePath); statErr == nil && !fi.IsDir() {
+				items[i].FileSize = fi.Size()
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, items)
 }
@@ -347,8 +400,6 @@ func (h *Handler) SetupInfo(w http.ResponseWriter, r *http.Request) {
 	ytExists := fileExists(h.config.YTDLPPath)
 	ffExists := fileExists(h.config.FFmpegPath)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ytdlpPath":    h.config.YTDLPPath,
-		"ffmpegPath":   h.config.FFmpegPath,
 		"ytdlpExists":  ytExists,
 		"ffmpegExists": ffExists,
 	})
@@ -419,12 +470,10 @@ func (h *Handler) GetAISummary(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]string{
 		"summary":    string(summary),
 		"transcript": string(transcript),
-		"debug_dir":  dir,
-		"debug_base": baseName,
 	}
 
 	if string(summary) == "" && string(transcript) == "" {
-		resp["error"] = fmt.Sprintf("Archivos no encontrados en %s. Verifica que whisper esté instalado.", dir)
+		resp["error"] = "Transcripción no disponible para este archivo."
 	}
 
 	writeJSON(w, http.StatusOK, resp)

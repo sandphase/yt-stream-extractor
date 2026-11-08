@@ -25,7 +25,8 @@ type DownloadRecord struct {
 	AIGenerateBRoll bool      `json:"aiGenerateBRoll"`
 	Status          string    `json:"status"`
 	RetryCount      int       `json:"retryCount"`
-	FilePath        string    `json:"filePath"`
+	FilePath        string    `json:"-"`
+	FileSize        int64     `json:"fileSize,omitempty"`
 	ErrorMsg        string    `json:"errorMsg"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
@@ -56,6 +57,7 @@ type AnalyzeResponse struct {
 
 type DownloadRequest struct {
 	URL             string  `json:"url"`
+	Title           string  `json:"title"`
 	Format          string  `json:"format"`
 	Container       string  `json:"container"`
 	Quality         string  `json:"quality"`
