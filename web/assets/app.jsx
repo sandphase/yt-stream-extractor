@@ -1,1253 +1,1156 @@
-const { useEffect, useMemo, useState, useCallback } = React;
+// YTDown Studio - Pro Stream Extractor & Audio Master
+// Designed with ui-ux-pro-max guidelines (Dark OLED Obsidian Studio + Cyber Glow)
 
-// Persistent Storage Keys
-const KEY_YTDOWN_HISTORY = "ytdown_history";
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
-function getLocalHistory() {
-  try {
-    const raw = localStorage.getItem(KEY_YTDOWN_HISTORY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    console.warn("Failed to parse ytdown_history", e);
+function apiBase() {
+  if (typeof window !== 'undefined' && window.__API_BASE__) {
+    return window.__API_BASE__;
   }
-  const defaultHistory = [
-    {
-      id: 101,
-      sourceUrl: "https://www.youtube.com/watch?v=4xDzrJKXOOY",
-      url: "https://www.youtube.com/watch?v=4xDzrJKXOOY",
-      title: "SYNTHWAVE CYBERPUNK 2077 // High-Fidelity Radio Stream",
-      format: "video",
-      quality: "1080p 60fps",
-      container: "mp4",
-      status: "COMPLETED",
-      aiSeparateStems: true,
-      aiTranscribe: true,
-      aiGenerateBRoll: true,
-      filePath: "/media/vault/synthwave_cyberpunk_2077.mp4",
-      createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-    },
-    {
-      id: 102,
-      sourceUrl: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
-      url: "https://www.youtube.com/watch?v=jfKfPfyJRdk",
-      title: "Lofi Hip Hop Radio - Beats to Relax/Study to",
-      format: "audio",
-      quality: "320 kbps",
-      container: "mp3",
-      status: "COMPLETED",
-      aiSeparateStems: true,
-      aiTranscribe: false,
-      aiGenerateBRoll: false,
-      filePath: "/media/vault/lofi_hiphop_relax_study.mp3",
-      createdAt: new Date(Date.now() - 86400000 * 4).toISOString(),
-    },
-    {
-      id: 103,
-      sourceUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      title: "Never Gonna Give You Up (4K 60FPS Remastered Edition)",
-      format: "video",
-      quality: "4K 60fps",
-      container: "mp4",
-      status: "COMPLETED",
-      aiSeparateStems: false,
-      aiTranscribe: true,
-      aiGenerateBRoll: false,
-      filePath: "/media/vault/never_gonna_give_you_up_4k.mp4",
-      createdAt: new Date(Date.now() - 86400000 * 7).toISOString(),
-    }
-  ];
-  localStorage.setItem(KEY_YTDOWN_HISTORY, JSON.stringify(defaultHistory));
-  return defaultHistory;
-}
-
-function saveLocalHistory(hist) {
-  localStorage.setItem(KEY_YTDOWN_HISTORY, JSON.stringify(hist));
-}
-
-function getLocalStats() {
-  const hist = getLocalHistory();
-  const completed = hist.filter(h => (h.status || "").toUpperCase() === "COMPLETED").length;
-  const failed = hist.filter(h => (h.status || "").toUpperCase() === "FAILED").length;
-  return {
-    totalDownloads: hist.length,
-    completed: completed,
-    failed: failed,
-    activeJobs: 0,
-    totalStorageBytes: hist.length * 480 * 1024 * 1024
-  };
-}
-
-function extractVideoId(rawUrl) {
-  if (!rawUrl) return null;
-  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-  const match = rawUrl.match(regExp);
-  return (match && match[2].length === 11) ? match[2] : null;
-}
-
-async function analyzeVideoOnline(url) {
-  const videoId = extractVideoId(url);
-  let title = "RETRANSMISIÓN DE FLUJO MULTIMEDIA // HIGH BITRATE";
-  let uploader = "YT_STREAM_NODE";
-  let thumbnail = "https://images.unsplash.com/photo-1518770660439-4636190af475?w=800&q=80";
-  let duration = 345;
-
-  if (videoId) {
-    thumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-    try {
-      const res = await fetch(`https://noembed.com/embed?url=${encodeURIComponent(url)}`);
-      if (res.ok) {
-        const info = await res.json();
-        if (info && info.title) {
-          title = info.title;
-          uploader = info.author_name || "YOUTUBE_CREATOR";
-          if (info.thumbnail_url) thumbnail = info.thumbnail_url;
-        }
-      }
-    } catch (e) {
-      console.warn("oEmbed fetch skipped", e);
-    }
-  } else if (url && url.trim()) {
-    title = `STREAM: ${url.replace(/^https?:\/\//, '').slice(0, 45)}`;
+  if (typeof window !== 'undefined' && window.location.pathname.indexOf('/demos/ytdown') !== -1) {
+    return '/demos/ytdown';
   }
-
-  const mm = Math.floor(duration / 60);
-  const ss = duration % 60;
-  const durationFormatted = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-
-  return {
-    title: title,
-    uploader: uploader,
-    thumbnail: thumbnail,
-    duration: duration,
-    durationFormatted: durationFormatted,
-    viewCount: 1420580,
-    videoFormats: [
-      { id: "137", label: "1080p 60fps (AV1 High Bitrate)", height: 1080, fps: 60, bitrateKbps: 8400, kind: "video" },
-      { id: "248", label: "1080p 30fps (H.264 Master)", height: 1080, fps: 30, bitrateKbps: 5200, kind: "video" },
-      { id: "22", label: "720p 60fps (VP9 Streaming)", height: 720, fps: 60, bitrateKbps: 3400, kind: "video" },
-      { id: "18", label: "480p 30fps (Universal MP4)", height: 480, fps: 30, bitrateKbps: 1800, kind: "video" }
-    ],
-    audioFormats: [
-      { id: "140", label: "320 kbps (FLAC Studio Master)", bitrateKbps: 320, kind: "audio" },
-      { id: "251", label: "256 kbps (AAC High-Fidelity)", bitrateKbps: 256, kind: "audio" },
-      { id: "141", label: "160 kbps (Opus Neural Codec)", bitrateKbps: 160, kind: "audio" },
-      { id: "139", label: "128 kbps (MP3 Universal Stream)", bitrateKbps: 128, kind: "audio" }
-    ]
-  };
-}
-
-function apiOrigin() {
-  if (typeof window !== "undefined" && window.__API_BASE__) {
-    return String(window.__API_BASE__).replace(/\/$/, "");
-  }
-  if (typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")) {
-    return "/demos/ytdown";
-  }
-  return "";
-}
-
-function apiUrl(path) {
-  const base = apiOrigin();
-  if (!path.startsWith("/")) path = "/" + path;
-  return base + path;
+  return '';
 }
 
 function wsUrl() {
-  const base = apiOrigin();
-  const wsProto = location.protocol === "https:" ? "wss" : "ws";
-  if (!base) {
-    return `${wsProto}://${location.host}/ws`;
+  if (typeof window === 'undefined') return '';
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host;
+  const p = String(window.location.port || '');
+  if (p === '3000' || p === '5173') {
+    return proto + '//' + window.location.hostname + ':8090/ws';
   }
-  if (base.startsWith("http://") || base.startsWith("https://")) {
-    const u = new URL(base);
-    const p = u.protocol === "https:" ? "wss" : "ws";
-    return `${p}://${u.host}/ws`;
+  if (window.location.pathname.indexOf('/demos/ytdown') !== -1) {
+    return proto + '//' + host + '/demos/ytdown/ws';
   }
-  const cleanBase = base.replace(/\/$/, "");
-  return `${wsProto}://${location.host}${cleanBase}/ws`;
+  return proto + '//' + host + '/ws';
 }
 
-const completedAutoDownloads = new Set();
-
-// Cargas binarias simuladas (archivos multimedia reales y reproducibles para el modo demo)
-const SAMPLE_MP3_B64 = "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";
-const SAMPLE_MP4_B64 = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAABWJtZGF0AAACsAYF//+s3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NCByMzE5MSA0NjEzYWMzIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNCAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOi0zOi0zIGFuYWx5c2U9MHgzOjB4MTEzIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0yLjAwOjAuNzAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0xIGNxbT0wIGRlYWR6b25lPTIxLDExIGZhc3RfcHNraXA9MSBjaHJvbWFfcXBfb2Zmc2V0PS00IHRocmVhZHM9MyBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTMgYl9weXJhbWlkPTIgYl9hZGFwdD0xIGJfYmlhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0wIHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MjUgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjIwAIAAAAA9ZYiEABHOf/73iB8yy2+catdyEeetLq0fUO5GcV6kvf4gAhHyNo1+s9B83ToEdAAAOQG2AVspks3iwknM4QAAAA5BmiRsQRzn/rUqgAAOWNwATGF2YzYxLjMuMTAwAAIwQA4AAAALQZ5CeIdnPwAAN+EBGCAHARggBwAAAAsBnmF0Q3OfAABQQAEYIAcBGCAHAAAACwGeY2pDc58A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";
-
-function base64ToBlob(base64, mimeType) {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: mimeType });
-}
-
-function triggerBrowserDownload(id, filename) {
-  if (!id && !filename) return;
-
-  // 1. Sanear nombre de archivo y garantizar extension correcta sin sufijos .txt
-  let cleanFilename = (filename || (id ? `descarga_${id}` : "descarga")).trim();
-  cleanFilename = cleanFilename.replace(/\.txt$/i, "");
-
-  // Detectar formato segun extension o parametros
-  let ext = "mp4";
-  let mimeType = "video/mp4";
-  const lower = cleanFilename.toLowerCase();
-  if (lower.endsWith(".mp3") || lower.includes("audio") || lower.endsWith(".m4a") || lower.endsWith(".opus") || lower.endsWith(".flac")) {
-    ext = "mp3";
-    mimeType = "audio/mpeg";
-    if (!lower.endsWith(".mp3")) {
-      cleanFilename = cleanFilename.replace(/\.[a-z0-9]+$/i, "") + ".mp3";
-    }
-  } else {
-    ext = "mp4";
-    mimeType = "video/mp4";
-    if (!lower.endsWith(".mp4")) {
-      cleanFilename = cleanFilename.replace(/\.[a-z0-9]+$/i, "") + ".mp4";
-    }
-  }
-
-  // Limpiar caracteres especiales incompatibles con sistemas de archivos
-  const lastDot = cleanFilename.lastIndexOf(".");
-  const basePart = lastDot > 0 ? cleanFilename.substring(0, lastDot) : cleanFilename;
-  const extPart = lastDot > 0 ? cleanFilename.substring(lastDot + 1) : ext;
-  const safeBase = basePart.replace(/[^\w\s\-\(\)\[\]]/gi, "_").replace(/\s+/g, "_").trim() || `media_${id}`;
-  cleanFilename = `${safeBase}.${extPart}`;
-
-  // 2. Si es una descarga procesada por el backend Go real
-  const isRealBackendId = Number(id) > 0 && Number(id) < 1000000000;
-  if (isRealBackendId) {
-    const url = apiUrl(`/api/downloads/${id}/file`);
+async function api(path, opts = {}) {
+  const url = `${apiBase()}${path}`;
+  const res = await fetch(url, {
+    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    ...opts,
+  });
+  if (!res.ok) {
+    let msg = `HTTP error ${res.status}`;
+    let code = 'UNKNOWN';
     try {
-      const link = document.createElement("a");
-      link.href = url;
-      if (cleanFilename) link.setAttribute("download", cleanFilename);
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        try { link.remove(); } catch(e){}
-      }, 2000);
-      return;
-    } catch (err) {
-      console.warn("Direct download error", err);
-    }
+      const err = await res.json();
+      if (err && err.error) msg = err.error;
+      else if (err && err.message) msg = err.message;
+      if (err && err.code) code = err.code;
+    } catch (_) {}
+    const error = new Error(msg);
+    error.code = code;
+    throw error;
   }
-
-  // 3. Fallback para modo desconectado o tarjetas de muestra estáticas
-  const assetBase = typeof window !== "undefined" && window.location.pathname.includes("/demos/ytdown")
-    ? "/demos/ytdown/assets/"
-    : "./assets/";
-  const samplePath = assetBase + (ext === "mp3" ? "sample.mp3" : "sample.mp4");
-
-  fetch(samplePath)
-    .then(res => {
-      if (!res.ok) throw new Error("Fallback to in-memory blob");
-      return res.blob();
-    })
-    .then(blob => {
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = blobUrl;
-      link.download = cleanFilename;
-      link.style.display = "none";
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => {
-        link.remove();
-        URL.revokeObjectURL(blobUrl);
-      }, 4000);
-    })
-    .catch(() => {
-      // Fallback en memoria si fallara la solicitud al recurso estático
-      try {
-        const b64Data = ext === "mp3" ? SAMPLE_MP3_B64 : SAMPLE_MP4_B64;
-        const mediaBlob = base64ToBlob(b64Data, mimeType);
-        const blobUrl = URL.createObjectURL(mediaBlob);
-        const link = document.createElement("a");
-        link.href = blobUrl;
-        link.download = cleanFilename;
-        link.style.display = "none";
-        document.body.appendChild(link);
-        link.click();
-        setTimeout(() => {
-          link.remove();
-          URL.revokeObjectURL(blobUrl);
-        }, 4000);
-      } catch (e) {
-        console.error("Error al generar descarga simulada", e);
-      }
-    });
+  return res.json();
 }
 
-function autoDownloadCompletedJob(id, filename) {
-  if (!id || completedAutoDownloads.has(id)) return;
-  completedAutoDownloads.add(id);
-  triggerBrowserDownload(id, filename);
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-async function api(path, options = {}) {
-  try {
-    const response = await fetch(apiUrl(path), {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
-    if (response.ok) {
-      return await response.json();
-    }
-  } catch (e) {
-    console.warn("Remote API error, using client fallback", e);
-  }
-
-  // Client Simulation Engine Fallback
-  const cleanPath = path.split('?')[0];
-
-  if (cleanPath === "/api/history") {
-    if (options.method === "DELETE") {
-      saveLocalHistory([]);
-      return { status: "success" };
-    }
-    return getLocalHistory();
-  }
-
-  if (cleanPath.startsWith("/api/history/")) {
-    const id = cleanPath.replace("/api/history/", "");
-    const updated = getLocalHistory().filter(h => String(h.id) !== String(id));
-    saveLocalHistory(updated);
-    return { status: "success" };
-  }
-
-  if (cleanPath === "/api/stats") {
-    return getLocalStats();
-  }
-
-  if (cleanPath === "/api/analyze") {
-    const body = options.body ? JSON.parse(options.body) : {};
-    return await analyzeVideoOnline(body.url);
-  }
-
-  if (cleanPath === "/api/ai/summary") {
-    const urlParams = new URLSearchParams(path.split('?')[1] || "");
-    const id = urlParams.get("id");
-    const item = getLocalHistory().find(h => String(h.id) === String(id));
-    const title = item ? item.title : "PROCESAMIENTO_NEURAL";
-    return {
-      summary: `[MOTOR NEURAL YTDown v3.2 - ANÁLISIS DE CONTENIDO]\n` +
-        `============================================================\n` +
-        `• Muestra: ${title}\n` +
-        `• Entropía de Audio: Rango dinámico 18.4 LUFS (Masterizado)\n` +
-        `• Separación de Pistas: Spleeter v2.4 (Voz, Bajo, Batería, Sintetizador)\n` +
-        `• Resumen Ejecutivo:\n` +
-        `  El flujo audiovisual presenta una estructura secuencial balanceada.\n` +
-        `  Segmento 00:00 - 01:30: Introducción tonal y establecimiento del tempo.\n` +
-        `  Segmento 01:30 - 04:15: Progresión armónica principal de alta fidelidad.\n` +
-        `  Segmento 04:15 - Final: Cierre en fade out con modulación residual.`,
-      transcript: `00:00:02 [IA-Whisper]: Inicializando decodificación de flujo acústico...\n` +
-        `00:00:15 [Audio Track]: Frecuencia de muestreo 48.000 Hz a 24-bit PCM.\n` +
-        `00:01:05 [Transcripción]: Transmisión de datos sin latencia apreciable.\n` +
-        `00:02:40 [Análisis Neural]: Detección de patrones rítmicos completada con confianza del 99.4%.\n` +
-        `00:04:10 [Sistema]: Exportación a códec Opus/FLAC completada exitosamente.`
-    };
-  }
-
-  if (cleanPath === "/api/downloads") {
-    return { status: "queued", id: Date.now() };
-  }
-
-  if (cleanPath === "/api/downloads/batch") {
-    return { status: "batch_queued" };
-  }
-
-  if (cleanPath.startsWith("/api/jobs/")) {
-    return { status: "job_canceled" };
-  }
-
-  return {};
+function formatSpeed(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec <= 0) return '0 MB/s';
+  const mb = bytesPerSec / (1024 * 1024);
+  return `${mb.toFixed(1)} MB/s`;
 }
 
-const NAV = [
-  { id: "new", label: "NUEVA DESCARGA", icon: "⚡" },
-  { id: "batch", label: "LOTES MASIVOS", icon: "📦" },
-  { id: "history", label: "HISTORIAL", icon: "📜" },
-  { id: "settings", label: "AJUSTES / NAS", icon: "⚙️" },
-];
+function formatDuration(sec) {
+  if (!sec || sec <= 0) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
-function Toast({ type, message, onClose }) {
-  useEffect(() => {
-    const t = setTimeout(onClose, 3800);
-    return () => clearTimeout(t);
-  }, [onClose]);
-  const ok = type === "success";
+// ----------------- SVG ICONS -----------------
+function ZapIcon({ className = 'w-4 h-4' }) {
   return (
-    <div
-      className={`fixed right-6 top-6 z-[100] flex items-center gap-4 rounded-lg border-l-4 px-6 py-4 shadow-neon-strong animate-pop-in glass-panel ${ok ? "border-yt text-white" : "border-white text-rose-100"
-        }`}
-    >
-      <div className={`flex h-10 w-10 items-center justify-center rounded-full ${ok ? "bg-yt/20" : "bg-rose-500/20"}`}>
-        <span className="text-xl">{ok ? "✓" : "!"}</span>
-      </div>
-      <div>
-        <p className="text-xs font-black uppercase tracking-widest opacity-50">{ok ? "System Success" : "System Error"}</p>
-        <p className="text-sm font-bold">{message}</p>
-      </div>
-    </div>
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </svg>
   );
 }
 
-function App() {
-  const [page, setPage] = useState("new");
-  const [url, setUrl] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analyzed, setAnalyzed] = useState(null);
-  const [formatMode, setFormatMode] = useState("video");
-  const [selVideoId, setSelVideoId] = useState("");
-  const [selAudioId, setSelAudioId] = useState("");
-  const [videoContainer, setVideoContainer] = useState("mp4");
-  const [audioCodec, setAudioCodec] = useState("mp3");
-  const [clipStart, setClipStart] = useState("");
-  const [clipEnd, setClipEnd] = useState("");
-  const [outputDir, setOutputDir] = useState(() => localStorage.getItem("ytdown_output_dir") || "");
-  const [metadata, setMetadata] = useState(true);
-  const [aiSeparate, setAiSeparate] = useState(false);
-  const [aiTranscribe, setAiTranscribe] = useState(false);
-  const [aiBroll, setAiBroll] = useState(false);
-  const [artist, setArtist] = useState("");
-  const [album, setAlbum] = useState("");
-  const [batchText, setBatchText] = useState("");
-  const [history, setHistory] = useState([]);
-  const [stats, setStats] = useState({});
-  const [liveJobs, setLiveJobs] = useState({});
-  const [error, setError] = useState("");
-  const [nasPath, setNasPath] = useState(() => localStorage.getItem("ytdown_output_dir") || "");
-  const [toast, setToast] = useState(null);
-  const [aiModal, setAiModal] = useState(null);
-  const [lastCompleted, setLastCompleted] = useState(null);
+function DownloadIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
 
-  const loadHistory = useCallback(async () => {
-    const data = await api("/api/history");
-    setHistory(Array.isArray(data) ? data : []);
+function MusicIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+function VideoIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="15" height="16" rx="2" />
+      <polygon points="23 7 17 12 23 17 23 7" />
+    </svg>
+  );
+}
+
+function LayersIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
+    </svg>
+  );
+}
+
+function HistoryIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function SettingsIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function ShieldIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+function KeyIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21 2-2 2m-1.5 1.5L14 9l-1.5-1.5-2 2 1.5 1.5-3 3a6.5 6.5 0 1 1-2.8-2.8l3-3 1.5 1.5 2-2L9 6.2l3.5-3.5" />
+      <circle cx="7.5" cy="16.5" r="1.5" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function TrashIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function ClipboardIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
+    </svg>
+  );
+}
+
+function SparklesIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3z" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  );
+}
+
+function AlertTriangleIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function MenuIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="4" x2="20" y1="12" y2="12" />
+      <line x1="4" x2="20" y1="6" y2="6" />
+      <line x1="4" x2="20" y1="18" y2="18" />
+    </svg>
+  );
+}
+
+function SlidersIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="4" x2="4" y1="21" y2="14" />
+      <line x1="4" x2="4" y1="10" y2="3" />
+      <line x1="12" x2="12" y1="21" y2="12" />
+      <line x1="12" x2="12" y1="8" y2="3" />
+      <line x1="20" x2="20" y1="21" y2="16" />
+      <line x1="20" x2="20" y1="12" y2="3" />
+      <line x1="1" x2="7" y1="14" y2="14" />
+      <line x1="9" x2="15" y1="8" y2="8" />
+      <line x1="17" x2="23" y1="16" y2="16" />
+    </svg>
+  );
+}
+
+function XIcon({ className = 'w-4 h-4' }) {
+  return (
+    <svg aria-hidden="true" className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+// ----------------- APLICACIÓN PRINCIPAL -----------------
+function App() {
+  const [page, setPage] = useState('new');
+  const [url, setUrl] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [analyzed, setAnalyzed] = useState(null);
+  const [error, setError] = useState(null);
+  const [errorCode, setErrorCode] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [activeJobs, setActiveJobs] = useState([]);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Opciones de descarga
+  const [selectedFormat, setSelectedFormat] = useState('audio'); // 'audio' | 'video'
+  const [audioFormat, setAudioFormat] = useState('mp3');
+  const [audioBitrate, setAudioBitrate] = useState('320k');
+  const [normalizeLoudness, setNormalizeLoudness] = useState(true);
+  const [embedMetadata, setEmbedMetadata] = useState(true);
+  const [trimStart, setTrimStart] = useState('');
+  const [trimEnd, setTrimEnd] = useState('');
+  const [videoQuality, setVideoQuality] = useState('best');
+  const [videoContainer, setVideoContainer] = useState('mp4');
+
+  // Lotes
+  const [batchUrls, setBatchUrls] = useState('');
+  const [batchFormat, setBatchFormat] = useState('audio');
+  const [batchLoading, setBatchLoading] = useState(false);
+
+  const trackedJobsRef = useRef(new Set());
+  const autoDownloadedRef = useRef(new Set());
+
+  const triggerBrowserDownload = useCallback((jobId) => {
+    if (!jobId || autoDownloadedRef.current.has(jobId)) return;
+    autoDownloadedRef.current.add(jobId);
+    const dlUrl = `${apiBase()}/api/downloads/file?id=${jobId}`;
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.setAttribute('download', '');
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      try { document.body.removeChild(a); } catch (_) {}
+    }, 2000);
   }, []);
 
-  const loadStats = useCallback(async () => {
-    const data = await api("/api/stats");
-    setStats(data && typeof data === "object" ? data : {});
+  // 1. CARGA INICIAL
+  const loadHistory = useCallback(async () => {
+    try {
+      const data = await api('/api/history');
+      if (Array.isArray(data)) setHistory(data);
+    } catch (_) {}
+  }, []);
+
+  const loadActiveJobs = useCallback(async () => {
+    try {
+      const data = await api('/api/jobs/active');
+      if (Array.isArray(data)) setActiveJobs(data);
+    } catch (_) {}
   }, []);
 
   useEffect(() => {
     loadHistory();
-    loadStats();
-    let ws = null;
-    try {
-      if (typeof window !== "undefined") {
-        ws = new WebSocket(wsUrl());
-        ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            if (message.type === "job_update" && message.data) {
-              const job = message.data;
-              setLiveJobs((prev) => ({ ...prev, [job.id]: { ...(prev[job.id] || {}), ...job } }));
-              loadHistory();
-              loadStats();
-              if (job.state === "completed") {
-                const fname = job.filePath ? job.filePath.split(/[\\/]/).pop() : (job.title || "archivo");
-                setLastCompleted({ id: job.id, title: job.title || fname, filename: fname });
-                setToast({ type: "success", message: `¡DESCARGA LISTA EN SERVIDOR! Guardando en tu equipo...` });
-                autoDownloadCompletedJob(job.id, fname);
-              }
-              if (job.state === "failed") {
-                setToast({ type: "error", message: job.message || "ERROR EN DESCARGA" });
-              }
-            }
-          } catch (e) {}
-        };
-      }
-    } catch (e) {}
+    loadActiveJobs();
 
-    const pollTimer = setInterval(async () => {
+    // WS
+    const socketUrl = wsUrl();
+    let ws = null;
+    if (socketUrl) {
       try {
-        const active = await api("/api/jobs/active");
-        if (Array.isArray(active) && active.length > 0) {
-          active.forEach(job => {
-            setLiveJobs(prev => ({ ...prev, [job.id]: { ...(prev[job.id] || {}), ...job } }));
-            if (job.state === "completed") {
-              const fname = job.filePath ? job.filePath.split(/[\\/]/).pop() : (job.title || "archivo");
-              setLastCompleted({ id: job.id, title: job.title || fname, filename: fname });
-              autoDownloadCompletedJob(job.id, fname);
+        ws = new WebSocket(socketUrl);
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg.type === 'job_update' && msg.data) {
+              const d = msg.data;
+              const st = (d.state || d.status || '').toLowerCase();
+              if (st === 'completed') {
+                trackedJobsRef.current.delete(d.id);
+                loadActiveJobs();
+                loadHistory();
+                setToast({ type: 'success', message: `¡Listo! Guardando archivo en tu navegador: ${d.title || 'Archivo multimedia'}` });
+                triggerBrowserDownload(d.id);
+              } else if (st === 'failed') {
+                trackedJobsRef.current.delete(d.id);
+                loadActiveJobs();
+                loadHistory();
+                setToast({ type: 'error', message: `Error en descarga: ${d.message || 'Falló la extracción'}` });
+              } else {
+                setActiveJobs((prev) => {
+                  const idx = prev.findIndex((j) => j.id === d.id);
+                  if (idx === -1) return [d, ...prev];
+                  const copy = [...prev];
+                  copy[idx] = { ...copy[idx], ...d };
+                  return copy;
+                });
+              }
             }
-          });
+          } catch (_) {}
+        };
+      } catch (_) {}
+    }
+
+    const interval = setInterval(async () => {
+      loadActiveJobs();
+      if (trackedJobsRef.current.size > 0) {
+        const ids = Array.from(trackedJobsRef.current);
+        for (const id of ids) {
+          try {
+            const stObj = await api(`/api/status?id=${id}`);
+            const st = ((stObj && (stObj.state || stObj.status)) || '').toLowerCase();
+            if (st === 'completed') {
+              trackedJobsRef.current.delete(id);
+              loadHistory();
+              loadActiveJobs();
+              setToast({ type: 'success', message: `¡Listo! Guardando archivo en tu navegador: ${stObj.title || 'Archivo multimedia'}` });
+              triggerBrowserDownload(id);
+            } else if (st === 'failed' || st === 'canceled') {
+              trackedJobsRef.current.delete(id);
+              loadHistory();
+              loadActiveJobs();
+              if (st === 'failed') {
+                setToast({ type: 'error', message: `Error: ${stObj.message || 'Falló la extracción'}` });
+              }
+            }
+          } catch (_) {}
         }
-      } catch (e) {}
-    }, 2500);
+      }
+    }, 1500);
 
     return () => {
+      clearInterval(interval);
       if (ws) ws.close();
-      clearInterval(pollTimer);
     };
-  }, [loadHistory, loadStats]);
+  }, [loadHistory, loadActiveJobs, triggerBrowserDownload]);
 
-  useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.ctrlKey && e.key === 'Enter' && url) runAnalyze();
-      if (e.ctrlKey && e.key === 'd' && analyzed) createJob();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [url, analyzed]);
-
-  useEffect(() => {
-    localStorage.setItem("ytdown_output_dir", nasPath);
-    setOutputDir(nasPath);
-  }, [nasPath]);
-
-  useEffect(() => {
-    if (!analyzed) return;
-    const vf = analyzed.videoFormats || [];
-    const af = analyzed.audioFormats || [];
-    setSelVideoId(vf[0]?.id || "");
-    setSelAudioId(af[0]?.id || "");
-  }, [analyzed]);
-
-  async function runAnalyze() {
-    try {
-      setError("");
-      setAnalyzing(true);
-      setAnalyzed(null);
-      const data = await api("/api/analyze", { method: "POST", body: JSON.stringify({ url }) });
-      setAnalyzed(data);
-      setToast({ type: "success", message: "DATOS DE RED OBTENIDOS" });
-    } catch (err) {
-      setError(err.message);
-      setToast({ type: "error", message: err.message });
-    } finally {
-      setAnalyzing(false);
+  // 2. ANALIZAR URL
+  const runAnalyze = async (customUrl) => {
+    const targetUrl = (customUrl || url || '').trim();
+    if (!targetUrl) {
+      setToast({ type: 'error', message: 'Ingresa un enlace de YouTube válido.' });
+      return;
     }
-  }
+    setLoading(true);
+    setError(null);
+    setErrorCode(null);
+    setAnalyzed(null);
 
-  async function openAiModal(id) {
     try {
-      const data = await api(`/api/ai/summary?id=${id}`);
-      setAiModal({ id, ...data });
-    } catch (err) {
-      setToast({ type: "error", message: "FALLO AL CARGAR IA" });
-    }
-  }
-
-  async function createJob() {
-    try {
-      setError("");
-      const vf = (analyzed?.videoFormats || []).find((x) => x.id === selVideoId);
-      const af = (analyzed?.audioFormats || []).find((x) => x.id === selAudioId);
-      const chosenQuality = formatMode === "video" ? (vf?.label || "1080p") : (af?.label || "320kbps");
-      const chosenContainer = formatMode === "video" ? videoContainer : audioCodec;
-      const jobTitle = analyzed?.title || url || "PROCESO_MULTIMEDIA";
-
-      const body = {
-        url,
-        format: formatMode,
-        container: chosenContainer,
-        quality: chosenQuality,
-        ytFormatId: formatMode === "video" ? (vf?.id || "") : (af?.id || ""),
-        videoFps: formatMode === "video" ? (vf?.fps || 0) : 0,
-        audioBitrate: formatMode === "audio" ? (af?.bitrateKbps || 0) : 0,
-        clipStart,
-        clipEnd,
-        outputDir: outputDir.trim(),
-        addMetadata: metadata,
-        aiSeparateStems: aiSeparate,
-        aiTranscribe: aiTranscribe,
-        aiGenerateBRoll: aiBroll,
-        artist,
-        album,
-      };
-
-      setToast({ type: "success", message: "SOLICITANDO DESCARGA AL SERVIDOR..." });
-
-      // 1. Intentar enviar al backend real
-      let resp = null;
-      try {
-        resp = await api("/api/downloads", { method: "POST", body: JSON.stringify(body) });
-      } catch (err) {
-        console.warn("Backend real no disponible", err);
-      }
-
-      // Si el backend real respondió con un ID numérico de base de datos
-      if (resp && resp.id && resp.id < 1000000000) {
-        const realId = resp.id;
-        const newJob = {
-          id: realId,
-          title: jobTitle,
-          progress: 5,
-          speedMiBs: 0,
-          state: "processing",
-          format: formatMode,
-          quality: chosenQuality,
-          url,
-          container: chosenContainer,
-          createdAt: new Date().toISOString()
-        };
-        setLiveJobs(prev => ({ ...prev, [realId]: newJob }));
-        setToast({ type: "success", message: `PROCESANDO EN SERVIDOR (TRABAJO #${realId})` });
-        return;
-      }
-
-      // 2. Modo fallback simulación (solo cuando no hay backend Go corriendo)
-      const simId = Date.now();
-      const newJob = {
-        id: simId,
-        title: jobTitle,
-        progress: 10,
-        speedMiBs: 16.4,
-        state: "processing",
-        format: formatMode,
-        quality: chosenQuality,
-        url,
-        container: chosenContainer,
-        createdAt: new Date().toISOString()
-      };
-      setLiveJobs(prev => ({ ...prev, [simId]: newJob }));
-
-      let currentProgress = 10;
-      const interval = setInterval(() => {
-        currentProgress += Math.floor(Math.random() * 15) + 12;
-        if (currentProgress >= 100) {
-          currentProgress = 100;
-          clearInterval(interval);
-          setLiveJobs(prev => {
-            const next = { ...prev };
-            delete next[simId];
-            return next;
-          });
-
-          const filename = `${jobTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)}.${chosenContainer}`;
-          const histItem = {
-            id: simId,
-            url: url,
-            sourceUrl: url,
-            title: jobTitle,
-            format: formatMode,
-            quality: chosenQuality,
-            container: chosenContainer,
-            status: "COMPLETED",
-            aiSeparateStems: aiSeparate,
-            aiTranscribe: aiTranscribe,
-            aiGenerateBRoll: aiBroll,
-            filePath: `/media/vault/${filename}`,
-            createdAt: new Date().toISOString()
-          };
-          const currentHist = getLocalHistory();
-          currentHist.unshift(histItem);
-          saveLocalHistory(currentHist);
-          loadHistory();
-          loadStats();
-          setLastCompleted({ id: simId, title: jobTitle, filename: filename });
-          setToast({ type: "success", message: "DESCARGA COMPLETADA" });
-          autoDownloadCompletedJob(simId, filename);
-        } else {
-          setLiveJobs(prev => ({
-            ...prev,
-            [simId]: {
-              ...prev[simId],
-              progress: currentProgress,
-              speedMiBs: 15.2 + Math.random() * 8.5
-            }
-          }));
-        }
-      }, 400);
-    } catch (err) {
-      setError(err.message);
-      setToast({ type: "error", message: err.message });
-    }
-  }
-
-  async function createBatch() {
-    try {
-      setError("");
-      const lines = batchText.split('\n').map(s => s.trim()).filter(Boolean);
-      if (lines.length === 0) {
-        setError("INGRESA AL MENOS UNA URL EN EL TERMINAL");
-        return;
-      }
-      setBatchText("");
-      setToast({ type: "success", message: `LOTE ENCOLADO (${lines.length} ENLACES)` });
-
-      lines.forEach((lineUrl, idx) => {
-        setTimeout(async () => {
-          const fakeAnalysis = await analyzeVideoOnline(lineUrl);
-          const jobId = Date.now() + idx;
-          const histItem = {
-            id: jobId,
-            url: lineUrl,
-            sourceUrl: lineUrl,
-            title: fakeAnalysis.title,
-            format: "video",
-            quality: "1080p 60fps",
-            container: "mp4",
-            status: "COMPLETED",
-            aiSeparateStems: false,
-            aiTranscribe: true,
-            aiGenerateBRoll: false,
-            filePath: `/media/vault/batch_item_${idx + 1}.mp4`,
-            createdAt: new Date().toISOString()
-          };
-          const hist = getLocalHistory();
-          hist.unshift(histItem);
-          saveLocalHistory(hist);
-          loadHistory();
-          loadStats();
-        }, (idx + 1) * 1000);
+      const data = await api('/api/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ url: targetUrl }),
       });
+      setAnalyzed(data);
+      setUrl(targetUrl);
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Error al analizar el enlace de YouTube.');
+      setErrorCode(err.code || 'UNKNOWN');
+    } finally {
+      setLoading(false);
     }
-  }
+  };
 
-  async function cancelJob(id) {
-    setLiveJobs((prev) => {
-      const n = { ...prev };
-      delete n[id];
-      return n;
-    });
-    setToast({ type: "success", message: "PROCESO ABORTADO" });
-    try {
-      await api(`/api/jobs/${id}`, { method: "DELETE" });
-    } catch (e) {}
-  }
+  // 4. INICIAR DESCARGA
+  const startDownload = async () => {
+    if (!analyzed && !url) return;
+    const targetTitle = (analyzed && analyzed.title) || 'Extrayendo Stream Multimedia…';
+    const req = {
+      url: (analyzed && (analyzed.url || analyzed.webpage_url || analyzed.sourceUrl)) || url,
+      title: targetTitle,
+      format: selectedFormat,
+      container: selectedFormat === 'audio' ? audioFormat : videoContainer,
+      quality: selectedFormat === 'audio' ? audioBitrate : videoQuality,
+      add_metadata: embedMetadata,
+      clip_start: trimStart,
+      clip_end: trimEnd,
+    };
 
-  async function deleteHistoryItem(id, deleteFile = false) {
     try {
-      await api(`/api/history/${id}?deleteFile=${deleteFile}`, { method: "DELETE" });
-      await loadHistory();
-      await loadStats();
-      setToast({ type: "success", message: `REGISTRO ${deleteFile ? "Y ARCHIVO " : ""}ELIMINADO` });
+      const res = await api('/api/downloads', {
+        method: 'POST',
+        body: JSON.stringify(req),
+      });
+      if (res && res.id) {
+        trackedJobsRef.current.add(res.id);
+        setActiveJobs((prev) => [
+          {
+            id: res.id,
+            state: 'processing',
+            title: targetTitle,
+            progress: 8,
+            message: 'Iniciando motor de extracción de alta velocidad...',
+          },
+          ...prev.filter((j) => j.id !== res.id),
+        ]);
+      }
+      setToast({ type: 'success', message: 'Extrayendo stream... La descarga a tu PC iniciará automáticamente al terminar.' });
+      loadActiveJobs();
     } catch (err) {
-      setToast({ type: "error", message: err.message });
+      setToast({ type: 'error', message: err.message || 'Error al encolar la descarga.' });
     }
-  }
+  };
 
-  async function clearAllHistory() {
-    if (!confirm("¿ESTÁS SEGURO DE LIMPIAR TODO EL HISTORIAL? (Esto no borrará los archivos del disco)")) return;
+  // 5. DESCARGAS POR LOTES
+  const startBatch = async () => {
+    const urls = batchUrls
+      .split('\n')
+      .map((u) => u.trim())
+      .filter((u) => u.length > 5);
+
+    if (urls.length === 0) {
+      setToast({ type: 'error', message: 'Ingresa al menos una URL por línea.' });
+      return;
+    }
+
+    setBatchLoading(true);
     try {
-      await api("/api/history", { method: "DELETE" });
-      await loadHistory();
-      await loadStats();
-      setToast({ type: "success", message: "HISTORIAL LIMPIADO" });
+      await api('/api/downloads/batch', {
+        method: 'POST',
+        body: JSON.stringify({ urls, format: batchFormat, quality: 'best' }),
+      });
+      setToast({ type: 'success', message: `${urls.length} enlaces encolados para extracción por lotes.` });
+      setBatchUrls('');
+      loadActiveJobs();
+      setPage('new');
     } catch (err) {
-      setToast({ type: "error", message: err.message });
+      setToast({ type: 'error', message: err.message || 'Error al procesar el lote.' });
+    } finally {
+      setBatchLoading(false);
     }
-  }
+  };
 
-  const activeList = useMemo(() => {
-    return Object.values(liveJobs)
-      .filter((j) => ["processing", "queued"].includes((j.state || "").toLowerCase()))
-      .sort((a, b) => a.id - b.id);
-  }, [liveJobs]);
+  const deleteHistoryItem = async (id) => {
+    try {
+      await api(`/api/history/${id}`, { method: 'DELETE' });
+      setHistory((prev) => prev.filter((item) => item.id !== id));
+      setToast({ type: 'success', message: 'Elemento eliminado de la biblioteca.' });
+    } catch (err) {
+      setToast({ type: 'error', message: err.message || 'No se pudo eliminar el elemento.' });
+    }
+  };
 
   return (
-    <div className="flex min-h-screen text-white selection:bg-yt selection:text-white">
-      <div className="scanline-overlay"></div>
+    <div className="min-h-screen bg-[#07080a] text-zinc-100 flex flex-col font-sans selection:bg-rose-600 selection:text-white">
+      {/* TOAST FLOTANTE */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-bounce flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl text-xs font-semibold text-white">
+          <span className={`h-2 w-2 rounded-full ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-400'}`}></span>
+          <span>{toast.message}</span>
+          <button onClick={() => setToast(null)} className="ml-2 text-zinc-400 hover:text-white">✕</button>
+        </div>
+      )}
 
-      {toast && <Toast type={toast.type} message={toast.message} onClose={() => setToast(null)} />}
-
-      {/* SIDEBAR HOLOGRÁFICO */}
-      <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-yt/20 glass-panel">
-        <div className="flex flex-col items-center border-b border-yt/30 px-6 py-8">
-          <div className="relative mb-4">
-            <div className="absolute -inset-2 animate-pulse rounded-lg bg-yt/20 blur-xl"></div>
-            <div className="relative flex h-16 w-16 items-center justify-center rounded-lg border-2 border-yt bg-black shadow-neon-strong">
-              <span className="text-3xl font-black text-yt">YT</span>
-            </div>
+      {/* HEADER / NAVIGATION BAR */}
+      <header className="sticky top-0 z-40 bg-[#0a0c10]/90 backdrop-blur-md border-b border-zinc-800/80 px-4 sm:px-8 py-3.5 flex items-center justify-between gap-4">
+        {/* LOGO */}
+        <div className="flex items-center gap-3">
+          <div className="h-9 w-9 rounded-xl bg-gradient-to-tr from-rose-600 to-amber-500 flex items-center justify-center text-white shadow-lg shadow-rose-950/50">
+            <ZapIcon className="w-5 h-5" />
           </div>
-          <div className="text-center">
-            <div className="text-lg font-black tracking-[0.2em] text-white">STUDIO_OS</div>
-            <div className="text-[10px] font-bold text-yt animate-pulse">SYSTEM_ACTIVE_V1.0</div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-black text-base sm:text-lg tracking-tight bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
+                YTDown Studio
+              </span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 font-bold">
+                PRO v2.5
+              </span>
+            </div>
+            <div className="text-[10px] text-zinc-500 font-mono hidden sm:block">
+              Audio & Video Mastering Suite
+            </div>
           </div>
         </div>
 
-        <nav className="flex-1 space-y-2 p-4">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setPage(item.id)}
-              className={`group relative flex w-full items-center gap-4 rounded-lg px-4 py-4 text-xs font-black tracking-widest transition-all duration-300 ${page === item.id
-                ? "bg-yt text-white shadow-neon-strong"
-                : "text-zinc-500 hover:bg-yt/10 hover:text-yt"
+        {/* DESKTOP NAV TABS */}
+        <nav className="hidden md:flex items-center gap-1.5 p-1 rounded-xl bg-zinc-900/80 border border-zinc-800">
+          {[
+            { id: 'new', label: 'Extractor Multimedia', icon: ZapIcon },
+            { id: 'batch', label: 'Descargas por Lotes', icon: LayersIcon },
+            { id: 'history', label: 'Mis Descargas', icon: HistoryIcon, badge: history.length },
+          ].map((item) => {
+            const Icon = item.icon;
+            const active = page === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setPage(item.id)}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                  active
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-950/40'
+                    : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
                 }`}
-            >
-              <span className="text-lg">{item.icon}</span>
-              {item.label}
-              {page === item.id && <div className="absolute right-2 h-2 w-2 animate-ping rounded-full bg-white"></div>}
-            </button>
-          ))}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{item.label}</span>
+                {item.badge > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-zinc-800 text-zinc-300">
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="border-t border-yt/20 p-6">
-          <div className="mb-4 text-[10px] font-black tracking-widest text-zinc-500 uppercase">Hotkeys</div>
-          <div className="space-y-2 text-[10px] font-bold text-zinc-400">
-            <div className="flex justify-between"><span>ANALYZE</span><span className="text-yt">CTRL+ENTER</span></div>
-            <div className="flex justify-between"><span>DOWNLOAD</span><span className="text-yt">CTRL+D</span></div>
+        {/* STUDIO CAPABILITIES BADGES */}
+        <div className="flex items-center gap-2.5">
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-[11px] font-mono text-emerald-400">
+            <span className="h-2 w-2 rounded-full bg-emerald-500"></span>
+            <span>Master 320kbps / FLAC</span>
           </div>
-          <div className="mt-6 rounded-lg bg-yt/5 p-4 border border-yt/10">
-            <div className="text-[10px] font-black text-yt uppercase mb-2">Storage_Node</div>
-            <div className="text-xl font-black">{(stats.totalStorageBytes ? stats.totalStorageBytes / (1024 ** 2) : 1540).toFixed(1)}<span className="text-xs ml-1 opacity-50">MB</span></div>
+
+          {/* MOBILE TOGGLE */}
+          <button
+            onClick={() => setMobileNavOpen(!mobileNavOpen)}
+            className="md:hidden flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white"
+          >
+            <MenuIcon className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      {/* MOBILE DRAWER */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm md:hidden flex flex-col p-6 animate-fade-in">
+          <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
+            <span className="font-bold text-white text-base">Navegación</span>
+            <button
+              onClick={() => setMobileNavOpen(false)}
+              className="h-8 w-8 rounded-lg bg-zinc-800 flex items-center justify-center text-zinc-300"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex flex-col gap-2 mt-4">
+            {[
+              { id: 'new', label: 'Extractor Multimedia', icon: ZapIcon },
+              { id: 'batch', label: 'Descargas por Lotes', icon: LayersIcon },
+              { id: 'history', label: 'Mis Descargas', icon: HistoryIcon },
+            ].map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => { setPage(item.id); setMobileNavOpen(false); }}
+                  className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
+                    page === item.id ? 'bg-rose-600 text-white' : 'text-zinc-300 hover:bg-zinc-800'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
-      </aside>
+      )}
 
-      {/* MAIN CONTENT */}
-      <div className="ml-64 flex min-h-screen flex-1 flex-col pb-32">
-        <header className="sticky top-0 z-30 border-b border-yt/20 bg-studio/80 px-10 py-8 backdrop-blur-xl">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-4xl font-black tracking-tighter text-white uppercase">
-                {page === "new" && "Terminal_Descarga"}
-                {page === "batch" && "Procesamiento_Lotes"}
-                {page === "history" && "Registro_Sistema"}
-                {page === "settings" && "Config_Nucleo"}
+      {/* MAIN VIEW */}
+      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-8">
+        {/* TAB 1: EXTRACTOR */}
+        {page === 'new' && (
+          <div className="space-y-8">
+            {/* HERO SECTION */}
+            <div className="text-center max-w-3xl mx-auto space-y-3 pt-2">
+              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-semibold">
+                <SparklesIcon className="w-3.5 h-3.5" />
+                <span>Extracción sin pérdida a 60fps & Master 320kbps</span>
+              </div>
+              <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight leading-tight">
+                Estudio de Extracción y Masterización de Medios
               </h1>
-              <div className="mt-2 flex items-center gap-4">
-                <div className="h-1 w-12 bg-yt"></div>
-                <span className="text-[10px] font-black tracking-[0.3em] text-yt uppercase">Secure_Connection_Established</span>
-              </div>
+              <p className="text-xs sm:text-sm text-zinc-400 leading-relaxed">
+                Descarga streams de YouTube en 4K/1080p 60fps, convierte a audio de estudio en MP3/FLAC y procesa aislamientos de voz en tiempo real.
+              </p>
             </div>
-            <div className="text-right">
-              <div className="text-[10px] font-black text-zinc-500 uppercase">Status</div>
-              <div className="font-mono text-emerald-400 font-bold text-xs">READY_ONLINE</div>
-            </div>
-          </div>
-        </header>
 
-        <main className="flex-1 px-10 py-10">
-          {lastCompleted && (
-            <div className="mb-8 p-5 border-2 border-emerald-500 bg-emerald-950/80 rounded-xl shadow-neon flex items-center justify-between gap-4 animate-pop-in">
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-ping"></span>
-                  <span className="text-xs font-black text-emerald-400 tracking-widest uppercase">¡Descarga lista en el servidor!</span>
-                </div>
-                <div className="text-base font-black text-white mt-1 uppercase">{lastCompleted.title}</div>
-                <div className="text-xs text-zinc-400 mt-0.5">Si la descarga no inició automáticamente en tu navegador, pulsa el botón:</div>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => triggerBrowserDownload(lastCompleted.id, lastCompleted.filename)}
-                  className="px-6 py-3 bg-emerald-500 text-black font-black text-xs uppercase tracking-widest hover:bg-emerald-400 transition-all rounded shadow-neon flex items-center gap-2 cursor-pointer"
-                >
-                  <span>📥</span> GUARDAR EN MI PC
-                </button>
-                <button onClick={() => setLastCompleted(null)} className="text-zinc-500 hover:text-white text-lg font-bold px-2 cursor-pointer">✕</button>
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="mb-8 animate-glitch border-2 border-yt bg-yt/10 p-6 text-sm font-black text-yt shadow-neon">
-              [SYSTEM_FAILURE]: {error.toUpperCase()}
-            </div>
-          )}
-
-          {page === "new" && (
-            <div className="grid gap-10 lg:grid-cols-12">
-              <div className="lg:col-span-7 space-y-8">
-                <div className="group relative rounded-xl border border-yt/20 p-8 glass-panel transition-all hover:border-yt/50">
-                  <div className="mb-6 flex items-center justify-between">
-                    <h2 className="text-xs font-black tracking-[0.2em] text-yt uppercase">Input_Stream_URL</h2>
-                    <div className="h-2 w-2 rounded-full bg-yt animate-pulse"></div>
-                  </div>
+            {/* OMNIBAR / INPUT BAR */}
+            <div className="max-w-3xl mx-auto space-y-3">
+              <div className="relative flex flex-col sm:flex-row items-stretch gap-2.5 p-2 rounded-2xl bg-[#0f1117] border-2 border-zinc-800 shadow-2xl focus-within:border-rose-500 focus-within:ring-4 focus-within:ring-rose-500/10 transition-all">
+                <div className="flex-1 flex items-center gap-3 pl-3 pr-2 py-2">
+                  <VideoIcon className="w-5 h-5 text-rose-500 shrink-0" />
                   <input
+                    type="text"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
-                    placeholder="HTTPS://WWW.YOUTUBE.COM/WATCH?V=..."
-                    className="w-full border-b-2 border-yt/20 bg-transparent py-4 font-mono text-lg font-bold text-white placeholder-zinc-700 outline-none transition focus:border-yt"
+                    onKeyDown={(e) => { if (e.key === 'Enter') runAnalyze(); }}
+                    placeholder="Pega cualquier enlace de YouTube (Video, Short, Música)..."
+                    className="w-full bg-transparent text-sm sm:text-base font-medium text-white placeholder-zinc-500 outline-none font-sans"
                   />
-                  
-                  {/* Sample links for quick testing */}
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] font-bold text-zinc-500 uppercase">Muestras:</span>
+                  {url && (
                     <button
-                      type="button"
-                      onClick={() => setUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ")}
-                      className="rounded border border-yt/30 bg-yt/5 px-2 py-0.5 text-[10px] font-mono text-yt hover:bg-yt hover:text-white transition-colors"
+                      onClick={() => setUrl('')}
+                      className="text-zinc-500 hover:text-zinc-300 p-1"
                     >
-                      Rick Astley (Remaster)
+                      <XIcon className="w-4 h-4" />
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setUrl("https://www.youtube.com/watch?v=jfKfPfyJRdk")}
-                      className="rounded border border-yt/30 bg-yt/5 px-2 py-0.5 text-[10px] font-mono text-yt hover:bg-yt hover:text-white transition-colors"
-                    >
-                      Lofi Beats Stream
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setUrl("https://www.youtube.com/watch?v=4xDzrJKXOOY")}
-                      className="rounded border border-yt/30 bg-yt/5 px-2 py-0.5 text-[10px] font-mono text-yt hover:bg-yt hover:text-white transition-colors"
-                    >
-                      Cyberpunk 2077 OST
-                    </button>
-                  </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) {
+                          setUrl(text);
+                          runAnalyze(text);
+                        }
+                      } catch (_) {
+                        setToast({ type: 'error', message: 'Permiso del portapapeles denegado.' });
+                      }
+                    }}
+                    className="hidden sm:flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-semibold transition-colors cursor-pointer"
+                    title="Pegar del portapapeles"
+                  >
+                    <ClipboardIcon className="w-3.5 h-3.5" />
+                    <span>Pegar</span>
+                  </button>
 
                   <button
-                    onClick={runAnalyze}
-                    disabled={analyzing}
-                    className="yt-gradient-btn mt-8 w-full py-4 text-xs font-black tracking-[0.3em] text-white uppercase disabled:opacity-50"
+                    type="button"
+                    onClick={() => runAnalyze()}
+                    disabled={loading || !url.trim()}
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg shadow-rose-950/50 cursor-pointer"
                   >
-                    {analyzing ? "Analyzing_Data..." : "Execute_Analysis"}
+                    {loading ? (
+                      <div className="flex items-center gap-2">
+                        <div className="h-4 w-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
+                        <span>Analizando…</span>
+                      </div>
+                    ) : (
+                      <>
+                        <ZapIcon className="w-4 h-4" />
+                        <span>Analizar</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* QUICK CHIPS */}
+              <div className="flex flex-wrap items-center justify-center gap-2 text-xs text-zinc-400">
+                <span className="text-zinc-500">Formatos soportados:</span>
+                <span className="px-2.5 py-1 rounded-lg bg-zinc-900/80 text-zinc-300 border border-zinc-800/80">
+                  🎵 MP3 320kbps • FLAC • WAV • M4A
+                </span>
+                <span className="px-2.5 py-1 rounded-lg bg-zinc-900/80 text-zinc-300 border border-zinc-800/80">
+                  🎬 MP4 4K/1080p 60fps • MKV • WebM
+                </span>
+              </div>
+            </div>
+
+            {/* ERROR / AVISO */}
+            {error && (
+              <div className="max-w-3xl mx-auto p-5 rounded-2xl bg-rose-950/30 border-2 border-rose-500/40 shadow-xl space-y-3 animate-fade-in">
+                <div className="flex items-start gap-3">
+                  <div className="h-9 w-9 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+                    <AlertTriangleIcon className="w-5 h-5" />
+                  </div>
+                  <div className="space-y-1 min-w-0 flex-1">
+                    <div className="text-sm font-bold text-rose-200">
+                      No se pudo analizar el enlace
+                    </div>
+                    <p className="text-xs text-rose-300 leading-relaxed">{error}</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* CARD DE STREAM ANALIZADO */}
+            {analyzed && (
+              <div className="max-w-4xl mx-auto rounded-3xl bg-[#0d0f14] border border-zinc-800 shadow-2xl p-6 sm:p-8 space-y-6 animate-fade-in">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+                  {/* PREVIEW THUMBNAIL */}
+                  <div className="md:col-span-5 space-y-3">
+                    <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-zinc-800 group shadow-lg">
+                      <img
+                        src={analyzed.thumbnail}
+                        alt={analyzed.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
+                      <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-white font-mono text-xs font-bold">
+                        {analyzed.durationFormatted || analyzed.duration_formatted || formatDuration(analyzed.duration)}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1">
+                      <h3 className="font-bold text-white text-sm sm:text-base line-clamp-2 leading-snug">
+                        {analyzed.title}
+                      </h3>
+                      <div className="flex items-center gap-2 text-xs text-zinc-400">
+                        <span>{analyzed.uploader || 'Canal de YouTube'}</span>
+                        <span>•</span>
+                        <span>{(analyzed.viewCount || analyzed.view_count) ? `${Number(analyzed.viewCount || analyzed.view_count).toLocaleString()} vistas` : 'Stream activo'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* MASTERING CONTROLS */}
+                  <div className="md:col-span-7 space-y-5">
+                    {/* FORMAT SELECTOR PILL (AUDIO VS VIDEO) */}
+                    <div className="p-1 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('audio')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                          selectedFormat === 'audio'
+                            ? 'bg-rose-600 text-white shadow-md'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        <MusicIcon className="w-4 h-4" />
+                        <span>Master de Audio (MP3/FLAC)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFormat('video')}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                          selectedFormat === 'video'
+                            ? 'bg-rose-600 text-white shadow-md'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        <VideoIcon className="w-4 h-4" />
+                        <span>Video Pro (4K/1080p)</span>
+                      </button>
+                    </div>
+
+                    {/* CONTROLES DE AUDIO */}
+                    {selectedFormat === 'audio' && (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block">
+                            Formato y Perfil de Audio
+                          </label>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            {[
+                              { id: 'mp3', label: 'MP3 320k', sub: 'Master Studio' },
+                              { id: 'flac', label: 'FLAC', sub: 'Lossless 24-bit' },
+                              { id: 'm4a', label: 'M4A', sub: 'AAC 256k Apple' },
+                              { id: 'wav', label: 'WAV', sub: 'Raw Studio PCM' },
+                            ].map((fmt) => (
+                              <button
+                                key={fmt.id}
+                                type="button"
+                                onClick={() => setAudioFormat(fmt.id)}
+                                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                                  audioFormat === fmt.id
+                                    ? 'bg-rose-600/10 border-rose-500 text-white'
+                                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                                }`}
+                              >
+                                <div className="font-bold text-xs">{fmt.label}</div>
+                                <div className="text-[10px] text-zinc-500 mt-0.5">{fmt.sub}</div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* TOGGLES DSP */}
+                        <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-800/80 space-y-3">
+                          <label className="flex items-center justify-between cursor-pointer">
+                            <span className="text-xs text-zinc-300 font-medium">
+                              Normalización EBU R128 (-14 LUFS Broadcast)
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={normalizeLoudness}
+                              onChange={(e) => setNormalizeLoudness(e.target.checked)}
+                              className="accent-rose-600 h-4 w-4 rounded"
+                            />
+                          </label>
+                          <label className="flex items-center justify-between cursor-pointer">
+                            <span className="text-xs text-zinc-300 font-medium">
+                              Incrustar carátula y metadatos ID3 oficiales
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={embedMetadata}
+                              onChange={(e) => setEmbedMetadata(e.target.checked)}
+                              className="accent-rose-600 h-4 w-4 rounded"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CONTROLES DE VIDEO */}
+                    {selectedFormat === 'video' && (
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block">
+                            Resolución Máxima
+                          </label>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            {[
+                              { id: 'best', label: 'Máxima Calidad', sub: 'Original Stream' },
+                              { id: '2160', label: '4K Ultra HD', sub: '2160p 60fps' },
+                              { id: '1080', label: '1080p Full HD', sub: 'High Bitrate' },
+                              { id: '720', label: '720p HD', sub: 'Rápido' },
+                            ].map((q) => (
+                              <button
+                                key={q.id}
+                                type="button"
+                                onClick={() => setVideoQuality(q.id)}
+                                className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                                  videoQuality === q.id
+                                    ? 'bg-rose-600/10 border-rose-500 text-white'
+                                    : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:border-zinc-700'
+                                }`}
+                              >
+                                <div className="font-bold text-xs">{q.label}</div>
+                                <div className="text-[10px] text-zinc-500 mt-0.5">{q.sub}</div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider block">
+                            Contenedor de Video
+                          </label>
+                          <div className="flex gap-2">
+                            {['mp4', 'mkv', 'webm'].map((c) => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => setVideoContainer(c)}
+                                className={`flex-1 py-2 rounded-xl border text-xs font-bold uppercase transition-all cursor-pointer ${
+                                  videoContainer === c
+                                    ? 'bg-rose-600 text-white border-rose-500'
+                                    : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+                                }`}
+                              >
+                                {c}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* BOTÓN PRIMARIO DE DESCARGA */}
+                    <button
+                      type="button"
+                      onClick={startDownload}
+                      className="w-full flex items-center justify-center gap-2.5 py-4 rounded-2xl bg-gradient-to-r from-rose-600 via-rose-500 to-amber-600 hover:from-rose-500 hover:to-amber-500 text-white font-extrabold text-sm uppercase tracking-wider transition-all shadow-xl shadow-rose-950/60 cursor-pointer"
+                    >
+                      <DownloadIcon className="w-5 h-5" />
+                      <span>Iniciar Extracción y Masterización</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* COLA DE TRABAJOS ACTIVOS */}
+            {activeJobs.length > 0 && (
+              <div className="max-w-4xl mx-auto space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping"></span>
+                    <span>Extracción en Curso ({activeJobs.length}) — Se guardará automáticamente en tu PC al llegar al 100%</span>
+                  </h3>
+                </div>
+
+                <div className="grid gap-3">
+                  {activeJobs.map((job) => {
+                    const pct = typeof job.progress === 'number' ? Math.max(5, Math.min(100, job.progress)) : 8;
+                    const spdText = job.speedMiBs
+                      ? `${Number(job.speedMiBs).toFixed(2)} MiB/s`
+                      : job.speed
+                      ? formatSpeed(job.speed)
+                      : '';
+                    const etaText = job.etaDisplay
+                      ? `ETA: ${job.etaDisplay}`
+                      : job.eta
+                      ? `ETA: ${job.eta}s`
+                      : '';
+                    return (
+                      <div
+                        key={job.id}
+                        className="p-5 rounded-2xl bg-[#0f1117] border border-rose-500/40 space-y-3 shadow-lg"
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="font-bold text-white text-xs sm:text-sm truncate">
+                            {job.title || job.message || 'Extrayendo Stream Multimedia…'}
+                          </div>
+                          <span className="px-2.5 py-1 rounded-md text-[10px] font-mono uppercase font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                            {job.state || job.status || 'procesando'}
+                          </span>
+                        </div>
+
+                        {job.message && job.title && (
+                          <div className="text-[11px] font-mono text-zinc-400 truncate">
+                            {job.message}
+                          </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                          <div className="h-3 w-full bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-gradient-to-r from-rose-500 via-amber-500 to-emerald-400 transition-all duration-300"
+                              style={{ width: `${pct}%` }}
+                            ></div>
+                          </div>
+                          <div className="flex items-center justify-between text-[11px] font-mono text-zinc-300">
+                            <span className="font-bold text-emerald-400">{pct}% completado</span>
+                            <span>{spdText}</span>
+                            <span>{etaText}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ARCHIVOS RECIENTES LISTOS PARA DESCARGAR EN TU PC */}
+            {history.filter((item) => item.status === 'completed').length > 0 && (
+              <div className="max-w-4xl mx-auto space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
+                    <span>Archivos Extraídos Listos para Guardar en tu PC</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setPage('history')}
+                    className="text-xs text-zinc-400 hover:text-white underline cursor-pointer"
+                  >
+                    Ver toda la biblioteca ({history.filter((item) => item.status === 'completed').length})
                   </button>
                 </div>
 
-                {analyzed && (
-                  <div className="animate-pop-in rounded-xl border border-yt/20 p-8 glass-panel">
-                    <div className="flex gap-8">
-                      <div className="relative shrink-0">
-                        <div className="absolute -inset-1 bg-yt/30 blur-md"></div>
-                        <img src={analyzed.thumbnail} className="relative h-40 w-72 rounded-lg border border-yt/50 object-cover" />
-                      </div>
-                      <div className="flex flex-col justify-center">
-                        <h3 className="text-2xl font-black leading-tight text-white uppercase">{analyzed.title}</h3>
-                        <p className="mt-2 text-sm font-bold text-yt">{analyzed.uploader.toUpperCase()}</p>
-                        <div className="mt-6 flex gap-4">
-                          <div className="rounded border border-yt/30 bg-yt/5 px-3 py-1 text-[10px] font-black text-yt">{analyzed.durationFormatted}</div>
-                          <div className="rounded border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-black text-zinc-400">{analyzed.viewCount.toLocaleString()} VIEWS</div>
+                <div className="grid gap-3">
+                  {history
+                    .filter((item) => item.status === 'completed')
+                    .slice(0, 6)
+                    .map((item) => (
+                      <div
+                        key={item.id}
+                        className="p-4 rounded-2xl bg-[#0d1212] border border-emerald-500/30 hover:border-emerald-500/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all shadow-lg"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                          <div className="h-11 w-11 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400">
+                            {item.format === 'audio' ? <MusicIcon className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-white text-xs sm:text-sm truncate">
+                              {item.title || 'Archivo Multimedia Extraído'}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-zinc-400">
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase font-bold">
+                                {item.container || (item.format === 'audio' ? 'mp3' : 'mp4')}
+                              </span>
+                              {item.fileSize > 0 && <span>{formatBytes(item.fileSize)}</span>}
+                              <span>•</span>
+                              <span className="text-emerald-400">Listo para guardar</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
+                          <a
+                            href={`${apiBase()}/api/downloads/file?id=${item.id}`}
+                            download
+                            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold uppercase tracking-wider transition-all shadow-lg shadow-emerald-950/60"
+                          >
+                            <DownloadIcon className="w-4 h-4" />
+                            <span>Guardar en mi PC (.{(item.container || (item.format === 'audio' ? 'mp3' : 'mp4')).toUpperCase()})</span>
+                          </a>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="lg:col-span-5 space-y-8">
-                <div className="rounded-xl border border-yt/20 p-8 glass-panel">
-                  <h2 className="mb-8 text-xs font-black tracking-[0.2em] text-yt uppercase">Config_Parameters</h2>
-
-                  <div className="flex gap-4 mb-8">
-                    {["video", "audio"].map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => setFormatMode(m)}
-                        className={`flex-1 border-2 py-3 text-[10px] font-black tracking-widest uppercase transition-all ${formatMode === m ? "border-yt bg-yt text-white shadow-neon" : "border-yt/20 text-zinc-500 hover:border-yt/50"
-                          }`}
-                      >
-                        {m}
-                      </button>
                     ))}
-                  </div>
-
-                  <div className="space-y-6">
-                    <div>
-                      <label className="text-[10px] font-black text-zinc-500 uppercase mb-2 block">Output_Container</label>
-                      <select
-                        value={formatMode === "video" ? videoContainer : audioCodec}
-                        onChange={(e) => formatMode === "video" ? setVideoContainer(e.target.value) : setAudioCodec(e.target.value)}
-                        className="w-full border border-yt/20 bg-black/50 p-3 text-xs font-bold text-white outline-none focus:border-yt"
-                      >
-                        {formatMode === "video" ? (
-                          <>
-                            <option value="mp4">MP4_STABLE</option>
-                            <option value="mkv">MKV_MASTER</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="mp3">MP3_HIGH_RES</option>
-                            <option value="flac">FLAC_LOSSLESS</option>
-                          </>
-                        )}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-black text-zinc-500 uppercase mb-2 block">Stream_Quality</label>
-                      <select
-                        value={formatMode === "video" ? selVideoId : selAudioId}
-                        onChange={(e) => formatMode === "video" ? setSelVideoId(e.target.value) : setSelAudioId(e.target.value)}
-                        className="w-full border border-yt/20 bg-black/50 p-3 text-xs font-bold text-white outline-none focus:border-yt"
-                      >
-                        {(formatMode === "video" ? (analyzed?.videoFormats || []) : (analyzed?.audioFormats || [])).map((f) => (
-                          <option key={f.id} value={f.id}>{f.label.toUpperCase()}</option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <input value={clipStart} onChange={(e) => setClipStart(e.target.value)} placeholder="START_TIME (00:00)" className="border border-yt/20 bg-black/50 p-3 text-xs font-bold text-white outline-none focus:border-yt" />
-                      <input value={clipEnd} onChange={(e) => setClipEnd(e.target.value)} placeholder="END_TIME (03:30)" className="border border-yt/20 bg-black/50 p-3 text-xs font-bold text-white outline-none focus:border-yt" />
-                    </div>
-
-                    <label className="flex items-center gap-3 cursor-pointer group">
-                      <div className={`h-5 w-5 border-2 flex items-center justify-center transition-all ${metadata ? "border-yt bg-yt shadow-neon" : "border-yt/20"}`}>
-                        {metadata && <span className="text-white text-xs">✓</span>}
-                      </div>
-                      <input type="checkbox" checked={metadata} onChange={(e) => setMetadata(e.target.checked)} className="hidden" />
-                      <span className="text-[10px] font-black text-zinc-400 uppercase group-hover:text-white">Embed_Metadata_&_Thumbnail</span>
-                    </label>
-
-                    <div className="pt-4 border-t border-yt/10 space-y-4">
-                      <h3 className="text-[10px] font-black text-yt uppercase tracking-widest">AI_Neural_Processing</h3>
-
-                      <label className="flex items-center gap-3 cursor-pointer group">
-                        <div className={`h-5 w-5 border-2 flex items-center justify-center transition-all ${aiSeparate ? "border-yt bg-yt shadow-neon" : "border-yt/20"}`}>
-                          {aiSeparate && <span className="text-white text-xs">✓</span>}
-                        </div>
-                        <input type="checkbox" checked={aiSeparate} onChange={(e) => setAiSeparate(e.target.checked)} className="hidden" />
-                        <span className="text-[10px] font-black text-zinc-400 uppercase group-hover:text-white">Track_Separation_(Spleeter)</span>
-                      </label>
-
-                      <label className="flex items-center gap-3 cursor-pointer group">
-                        <div className={`h-5 w-5 border-2 flex items-center justify-center transition-all ${aiTranscribe ? "border-yt bg-yt shadow-neon" : "border-yt/20"}`}>
-                          {aiTranscribe && <span className="text-white text-xs">✓</span>}
-                        </div>
-                        <input type="checkbox" checked={aiTranscribe} onChange={(e) => setAiTranscribe(e.target.checked)} className="hidden" />
-                        <span className="text-[10px] font-black text-zinc-400 uppercase group-hover:text-white">Auto_Transcription_(Whisper)</span>
-                      </label>
-
-                      <label className="flex items-center gap-3 cursor-pointer group">
-                        <div className={`h-5 w-5 border-2 flex items-center justify-center transition-all ${aiBroll ? "border-yt bg-yt shadow-neon" : "border-yt/20"}`}>
-                          {aiBroll && <span className="text-white text-xs">✓</span>}
-                        </div>
-                        <input type="checkbox" checked={aiBroll} onChange={(e) => setAiBroll(e.target.checked)} className="hidden" />
-                        <span className="text-[10px] font-black text-zinc-400 uppercase group-hover:text-white">Auto_B-Roll_Cutter_(FFmpeg)</span>
-                      </label>
-                    </div>
-
-                    <button
-                      onClick={createJob}
-                      className="yt-gradient-btn w-full py-5 text-xs font-black tracking-[0.4em] text-white uppercase shadow-neon-strong"
-                    >
-                      Initialize_Download
-                    </button>
-                  </div>
                 </div>
               </div>
-            </div>
-          )}
-
-          {page === "batch" && (
-            <div className="animate-pop-in rounded-xl border border-yt/20 p-10 glass-panel">
-              <h2 className="mb-8 text-xs font-black tracking-[0.2em] text-yt uppercase">Mass_Processing_Terminal</h2>
-              <textarea
-                value={batchText}
-                onChange={(e) => setBatchText(e.target.value)}
-                rows={15}
-                placeholder="PASTE_URLS_HERE_ONE_PER_LINE..."
-                className="w-full border border-yt/20 bg-black/50 p-6 font-mono text-sm font-bold text-white outline-none focus:border-yt"
-              />
-              <button
-                onClick={createBatch}
-                className="yt-gradient-btn mt-8 px-12 py-4 text-xs font-black tracking-[0.3em] text-white uppercase"
-              >
-                Execute_Batch_Job
-              </button>
-            </div>
-          )}
-
-          {page === "history" && (
-            <div className="space-y-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xs font-black tracking-[0.2em] text-yt uppercase">Registros_Guardados_en_Nucleo</h2>
-                <button
-                  onClick={clearAllHistory}
-                  className="px-4 py-2 border border-yt/40 bg-yt/5 text-[10px] font-black text-yt hover:bg-yt hover:text-white transition-all shadow-neon"
-                >
-                  LIMPIAR_TODO_EL_HISTORIAL
-                </button>
-              </div>
-
-              {history.length === 0 ? (
-                <div className="py-20 text-center border border-dashed border-yt/20 rounded-xl">
-                  <p className="text-xs font-black text-zinc-600 uppercase tracking-widest">No_History_Records_Found</p>
-                </div>
-              ) : (
-                history.map((item) => {
-                  const live = liveJobs[item.id];
-                  const st = (live?.state || item.status || "").toUpperCase();
-                  return (
-                    <div key={item.id} className="group relative overflow-hidden rounded-xl border border-yt/10 p-6 glass-panel transition-all hover:border-yt/40">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-6">
-                          <div className={`h-12 w-1 bg-yt ${st === 'PROCESSING' ? 'animate-pulse shadow-neon' : 'opacity-20'}`}></div>
-                          <div>
-                            <div className="text-sm font-black text-white uppercase tracking-tight">{item.title || item.url}</div>
-                            <div className="mt-1 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
-                              {item.format} // {item.quality || "AUTO"} // {item.createdAt ? item.createdAt.split('T')[0] : "REC"}
-                            </div>
-                            <div className="mt-2 flex gap-2">
-                              {item.aiSeparateStems && <span className="text-[8px] border border-yt/30 px-1 text-yt">STEMS_READY</span>}
-                              {item.aiTranscribe && (
-                                <button
-                                  onClick={() => openAiModal(item.id)}
-                                  className="text-[8px] border border-yt bg-yt/10 px-1 text-yt hover:bg-yt hover:text-white transition-all animate-pulse"
-                                >
-                                  VIEW_AI_SUMMARY_&_TRANSCRIPT
-                                </button>
-                              )}
-                              {item.aiGenerateBRoll && <span className="text-[8px] border border-yt/30 px-1 text-yt">B-ROLL_GEN</span>}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4">
-                          <div className={`px-4 py-1 text-[10px] font-black border ${st === 'COMPLETED' ? 'border-emerald-500 text-emerald-500' : 'border-yt text-yt'}`}>
-                            {st} {live?.progress ? `[${live.progress}%]` : ""}
-                          </div>
-
-                                                    {st === 'COMPLETED' && (
-                            <button
-                              onClick={() => {
-                                const ext = item.container || (item.format === 'audio' ? 'mp3' : 'mp4');
-                                const safeTitle = (item.title || `descarga_${item.id}`).replace(/[^\w\s\-\(\)\[\]]/gi, '_').replace(/\s+/g, '_').trim();
-                                triggerBrowserDownload(item.id, `${safeTitle}.${ext}`);
-                              }}
-                              className="px-3.5 py-1.5 text-[10px] font-black border border-emerald-500 bg-emerald-500 text-black hover:bg-emerald-400 transition-all flex items-center gap-1.5 shadow-neon uppercase tracking-wider rounded cursor-pointer"
-                              title="Descargar archivo a tu PC"
-                            >
-                              <span>📥</span> DESCARGAR
-                            </button>
-                          )}
-                          
-                          <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button
-                              onClick={() => { if(confirm("¿Eliminar solo este registro del historial?")) deleteHistoryItem(item.id, false) }}
-                              title="Eliminar del historial"
-                              className="h-8 w-8 flex items-center justify-center border border-yt/20 bg-black/40 text-xs text-zinc-400 hover:text-white hover:border-yt/60"
-                            >
-                              📜
-                            </button>
-                            {item.filePath && (
-                              <button
-                                onClick={() => { if(confirm("¿ELIMINAR ESTE REGISTRO Y TAMBIÉN EL ARCHIVO FÍSICO DEL DISCO?")) deleteHistoryItem(item.id, true) }}
-                                title="Eliminar registro y archivo físico"
-                                className="h-8 w-8 flex items-center justify-center border border-yt/40 bg-yt/5 text-xs text-yt hover:bg-yt hover:text-white"
-                              >
-                                🗑️
-                              </button>
-                            )}
-                          </div>
-
-                          {st !== "COMPLETED" && st !== "FAILED" && st !== "CANCELED" && (
-                            <button onClick={() => cancelJob(item.id)} className="text-zinc-500 hover:text-yt transition-colors">✕</button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          )}
-
-          {aiModal && (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-10 backdrop-blur-md animate-pop-in">
-              <div className="relative h-full w-full max-w-5xl overflow-hidden border border-yt/30 glass-panel shadow-neon-strong flex flex-col">
-                <div className="flex items-center justify-between border-b border-yt/20 p-6 bg-yt/5">
-                  <div>
-                    <h2 className="text-xl font-black tracking-widest text-yt uppercase">Neural_Data_Extraction</h2>
-                    <p className="text-[10px] font-bold text-zinc-500 uppercase">Process_ID: {aiModal.id}</p>
-                  </div>
-                  <button onClick={() => setAiModal(null)} className="text-yt hover:scale-125 transition-transform text-2xl font-black">✕</button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto p-8 space-y-10 custom-scrollbar">
-                  {aiModal.error && (
-                    <div className="border-2 border-yt bg-yt/10 p-4 text-[10px] font-black text-yt animate-glitch">
-                      [SYSTEM_ERROR]: {aiModal.error.toUpperCase()}
-                      <div className="mt-2 opacity-50">SEARCH_PATH: {aiModal.debug_dir}</div>
-                    </div>
-                  )}
-
-                  <section>
-                    <h3 className="text-xs font-black text-yt uppercase tracking-[0.3em] mb-4 flex items-center gap-2">
-                      <span className="h-1 w-4 bg-yt"></span> AI_EXECUTIVE_SUMMARY
-                    </h3>
-                    <div className="rounded-lg border border-yt/10 bg-black/40 p-6 font-mono text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">
-                      {aiModal.summary || "NO_SUMMARY_DATA_FOUND_IN_STORAGE"}
-                    </div>
-                  </section>
-
-                  <section>
-                    <h3 className="text-xs font-black text-yt uppercase tracking-[0.3em] mb-4 flex items-center gap-2">
-                      <span className="h-1 w-4 bg-yt"></span> FULL_TRANSCRIPT_LOG
-                    </h3>
-                    <div className="rounded-lg border border-white/5 bg-black/20 p-6 font-mono text-xs leading-relaxed text-zinc-500 whitespace-pre-wrap">
-                      {aiModal.transcript || "NO_TRANSCRIPT_DATA_FOUND_IN_STORAGE"}
-                    </div>
-                  </section>
-                </div>
-
-                <div className="border-t border-yt/20 p-4 bg-black/50 flex justify-end">
-                  <button onClick={() => setAiModal(null)} className="yt-gradient-btn px-8 py-2 text-[10px] font-black uppercase tracking-widest">Close_Terminal</button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {page === "settings" && (
-            <div className="max-w-2xl rounded-xl border border-yt/20 p-10 glass-panel">
-              <h2 className="mb-8 text-xs font-black tracking-[0.2em] text-yt uppercase">Core_Configuration</h2>
-              <div className="space-y-8">
-                <div>
-                  <label className="text-[10px] font-black text-zinc-500 uppercase mb-4 block">Storage_Node_Path</label>
-                  <input
-                    value={nasPath}
-                    onChange={(e) => setNasPath(e.target.value)}
-                    className="w-full border border-yt/20 bg-black/50 p-4 font-mono text-sm font-bold text-white outline-none focus:border-yt"
-                  />
-                </div>
-                <button
-                  onClick={() => {
-                    localStorage.setItem("ytdown_output_dir", nasPath);
-                    setToast({ type: "success", message: "AJUSTES GUARDADOS" });
-                  }}
-                  className="yt-gradient-btn px-10 py-4 text-xs font-black tracking-[0.2em] text-white uppercase"
-                >
-                  Save_Config
-                </button>
-              </div>
-            </div>
-          )}
-        </main>
-      </div>
-
-      {/* STICKY FOOTER - GLOBAL STATUS */}
-      <footer className="fixed bottom-0 left-64 right-0 z-50 border-t border-yt/30 bg-black/90 p-4 backdrop-blur-2xl">
-        <div className="flex items-center gap-8">
-          <div className="flex items-center gap-3 border-r border-yt/20 pr-8">
-            <div className="h-2 w-2 rounded-full bg-yt animate-ping"></div>
-            <span className="text-[10px] font-black tracking-[0.2em] text-yt uppercase">Live_Monitor</span>
-          </div>
-
-          <div className="flex flex-1 gap-4 overflow-x-auto no-scrollbar">
-            {activeList.length === 0 ? (
-              <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest">No_Active_Processes_In_Queue</span>
-            ) : (
-              activeList.map((j) => (
-                <div key={j.id} className="flex min-w-[300px] items-center gap-4 rounded-lg border border-yt/20 bg-yt/5 px-4 py-2">
-                  <span className="font-mono text-[10px] font-black text-yt">ID_{j.id}</span>
-                  <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-900">
-                    <div
-                      className="progress-glow-yt absolute left-0 top-0 h-full transition-all duration-500"
-                      style={{ width: `${j.progress || 0}%` }}
-                    />
-                  </div>
-                  <span className="font-mono text-[10px] font-black text-white">{j.progress}%</span>
-                  {j.speedMiBs > 0 && <span className="text-[10px] font-black text-yt">{j.speedMiBs.toFixed(1)}MB/S</span>}
-                  <button onClick={() => cancelJob(j.id)} className="text-yt hover:scale-125 transition-transform">✕</button>
-                </div>
-              ))
             )}
           </div>
+        )}
 
-          <div className="flex items-center gap-6 border-l border-yt/20 pl-8">
-            <div className="text-right">
-              <div className="text-[8px] font-black text-zinc-500 uppercase">Network_Load</div>
-              <div className="h-1 w-24 bg-zinc-800 rounded-full mt-1 overflow-hidden">
-                <div className="h-full bg-yt animate-pulse" style={{ width: activeList.length > 0 ? '65%' : '2%' }}></div>
+        {/* TAB 2: DESCARGAS POR LOTES */}
+        {page === 'batch' && (
+          <div className="max-w-3xl mx-auto space-y-6">
+            <div className="space-y-1">
+              <h2 className="text-xl font-bold text-white">Extracción por Lotes (Batch Mode)</h2>
+              <p className="text-xs text-zinc-400">Pega múltiples URLs de YouTube (una por línea) para descargarlas de forma secuencial.</p>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-[#0f1117] border border-zinc-800 space-y-4">
+              <textarea
+                value={batchUrls}
+                onChange={(e) => setBatchUrls(e.target.value)}
+                placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."
+                rows={8}
+                className="w-full p-4 rounded-xl bg-zinc-950 border border-zinc-800 text-xs font-mono text-white placeholder-zinc-600 outline-none focus:border-rose-500"
+              />
+
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+                <div className="flex gap-2 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={() => setBatchFormat('audio')}
+                    className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-bold uppercase ${
+                      batchFormat === 'audio' ? 'bg-rose-600 text-white' : 'bg-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    Audio MP3
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBatchFormat('video')}
+                    className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-bold uppercase ${
+                      batchFormat === 'video' ? 'bg-rose-600 text-white' : 'bg-zinc-800 text-zinc-400'
+                    }`}
+                  >
+                    Video MP4
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={startBatch}
+                  disabled={batchLoading || !batchUrls.trim()}
+                  className="w-full sm:w-auto px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider"
+                >
+                  {batchLoading ? 'Encolando…' : 'Procesar Lote'}
+                </button>
               </div>
             </div>
           </div>
-        </div>
-      </footer>
+        )}
+
+        {/* TAB 3: BIBLIOTECA / HISTORIAL */}
+        {page === 'history' && (
+          <div className="max-w-4xl mx-auto space-y-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold text-white">Mis Descargas</h2>
+                <p className="text-xs text-zinc-400">Archivos procesados y listos para guardar en tu dispositivo.</p>
+              </div>
+            </div>
+
+            {history.length === 0 ? (
+              <div className="p-12 text-center rounded-2xl bg-[#0f1117] border border-zinc-800 text-zinc-400 space-y-3">
+                <HistoryIcon className="w-8 h-8 mx-auto text-zinc-600" />
+                <p className="text-sm font-medium">No hay archivos descargados todavía.</p>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {history.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-4 rounded-xl bg-[#0f1117] border border-zinc-800 hover:border-zinc-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all shadow-md"
+                  >
+                    <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                      <div className="h-12 w-12 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-rose-400">
+                        {item.format === 'audio' ? <MusicIcon className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-white text-xs sm:text-sm truncate">{item.title || 'Archivo Multimedia'}</div>
+                        <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-zinc-400">
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-rose-300 uppercase font-bold">
+                            {item.container || item.format || 'media'}
+                          </span>
+                          <span>{formatBytes(item.fileSize)}</span>
+                          <span>•</span>
+                          <span>{item.quality || 'Standard'}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                      <a
+                        href={`${apiBase()}/api/downloads/file?id=${item.id}`}
+                        download
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md"
+                      >
+                        <DownloadIcon className="w-3.5 h-3.5" />
+                        <span>Guardar en mi PC</span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => deleteHistoryItem(item.id)}
+                        className="p-2 rounded-lg bg-zinc-800 hover:bg-rose-950 text-zinc-400 hover:text-rose-300 transition-colors cursor-pointer"
+                        title="Eliminar"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App />);
+const container = document.getElementById('root');
+if (ReactDOM.createRoot) {
+  ReactDOM.createRoot(container).render(<App />);
+} else {
+  ReactDOM.render(<App />, container);
+}

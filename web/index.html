@@ -3,11 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>YTDown Studio</title>
+    <title>YTDown Studio: Extractor de Medios</title>
+    <meta name="description" content="YTDown Studio: Extractor de audio y video de alto rendimiento con procesamiento neural." />
+    <script>
+      if (window.location.pathname === "/demos/ytdown") {
+        window.location.replace("/demos/ytdown/" + window.location.search + window.location.hash);
+      }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <script src="https://cdn.tailwindcss.com"></script>
@@ -16,112 +22,91 @@
       tailwind.config = window.tailwind.config = {
         theme: {
           extend: {
-            fontFamily: { sans: ["Plus Jakarta Sans", "system-ui", "sans-serif"] },
+            fontFamily: {
+              sans: ["Plus Jakarta Sans", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+              mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+            },
             colors: {
-              studio: "#09090b",
-              yt: "#FF0000",
-              "yt-glow": "rgba(255, 0, 0, 0.4)",
-              glass: "rgba(255, 255, 255, 0.03)",
-            },
-            animation: {
-              shimmer: "shimmer 1.4s ease-in-out infinite",
-              "pop-in": "popIn 0.45s cubic-bezier(0.34,1.56,0.64,1) forwards",
-              glow: "glowPulse 2s ease-in-out infinite",
-              glitch: "glitch 0.3s cubic-bezier(.25,.46,.45,.94) both infinite",
-              "scan-line": "scanline 8s linear infinite",
-            },
-            keyframes: {
-              shimmer: {
-                "0%, 100%": { backgroundPosition: "200% 0" },
-                "50%": { backgroundPosition: "-200% 0" },
-              },
-              popIn: {
-                "0%": { opacity: "0", transform: "scale(0.85)" },
-                "100%": { opacity: "1", transform: "scale(1)" },
-              },
-              glowPulse: {
-                "0%, 100%": { filter: "brightness(1) drop-shadow(0 0 5px rgba(255,0,0,0.2))" },
-                "50%": { filter: "brightness(1.3) drop-shadow(0 0 15px rgba(255,0,0,0.6))" },
-              },
-              glitch: {
-                "0%": { transform: "translate(0)" },
-                "20%": { transform: "translate(-2px, 2px)" },
-                "40%": { transform: "translate(-2px, -2px)" },
-                "60%": { transform: "translate(2px, 2px)" },
-                "80%": { transform: "translate(2px, -2px)" },
-                "100%": { transform: "translate(0)" },
-              },
-              scanline: {
-                "0%": { transform: "translateY(-100%)" },
-                "100%": { transform: "translateY(100%)" },
-              }
-            },
-            boxShadow: {
-              neon: "0 0 15px rgba(255, 0, 0, 0.3), 0 0 30px rgba(255, 0, 0, 0.1)",
-              "neon-strong": "0 0 20px rgba(255, 0, 0, 0.5), 0 0 40px rgba(255, 0, 0, 0.2)",
+              studio: "var(--bg)",
+              surface: "var(--surface)",
+              "surface-raised": "var(--surface-raised)",
+              "surface-overlay": "var(--surface-overlay)",
+              border: "var(--border)",
+              "border-subtle": "var(--border-subtle)",
+              "border-hover": "var(--border-hover)",
+              accent: "var(--accent)",
+              "accent-hover": "var(--accent-hover)",
+              "accent-subtle": "var(--accent-subtle)",
             },
           },
         },
       };
     </script>
     <style>
-      body {
-        font-family: "Plus Jakarta Sans", system-ui, sans-serif;
-        background-color: #09090b;
-        background-image:
-          linear-gradient(rgba(255, 0, 0, 0.02) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 0, 0, 0.02) 1px, transparent 1px);
-        background-size: 40px 40px;
+      /* Hallmark: modern-minimal | yt-stream-extractor */
+      :root {
+        --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+        --bg: #090a0c;
+        --surface: #111215;
+        --surface-raised: #17181d;
+        --surface-overlay: #1d1e24;
+        --border: #23252b;
+        --border-subtle: #191b20;
+        --border-hover: #32353e;
+        --text: #f4f4f5;
+        --text-muted: #8b8f98;
+        --text-dim: #52555e;
+        --accent: #e50914;
+        --accent-hover: #f40612;
+        --accent-subtle: rgba(229, 9, 20, 0.1);
+        --accent-border: rgba(229, 9, 20, 0.25);
+        --success: #10b981;
+        --success-subtle: rgba(16, 185, 129, 0.1);
+        --radius-sm: 6px;
+        --radius-md: 8px;
+        --radius-lg: 12px;
       }
-      .glass-panel {
-        background: rgba(255, 255, 255, 0.03);
-        backdrop-filter: blur(20px);
-        -webkit-backdrop-filter: blur(20px);
-        border: 1px solid rgba(255, 0, 0, 0.1);
+      html, body {
+        overflow-x: clip;
+        background-color: var(--bg);
+        color: var(--text);
+        font-family: var(--font-sans);
       }
-      .neon-border {
-        border: 1px solid #FF0000;
-        box-shadow: 0 0 10px rgba(255, 0, 0, 0.3);
+      .custom-scrollbar::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
       }
-      .yt-gradient-btn {
-        background: linear-gradient(135deg, #FF0000 0%, #990000 100%);
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+      .custom-scrollbar::-webkit-scrollbar-track {
+        background: var(--surface);
       }
-      .yt-gradient-btn:hover {
-        transform: translateY(-2px) scale(1.02);
-        box-shadow: 0 0 20px rgba(255, 0, 0, 0.6);
-        filter: brightness(1.1);
+      .custom-scrollbar::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 3px;
       }
-      .progress-glow-yt {
-        background: linear-gradient(90deg, #FF0000, #ff4d4d, #FF0000);
-        background-size: 200% 100%;
-        animation: barShine 1.5s linear infinite;
-        box-shadow: 0 0 15px rgba(255, 0, 0, 0.5);
+      .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+        background: var(--border-hover);
       }
-      @keyframes barShine {
-        0% { background-position: 0% 50%; }
-        100% { background-position: 200% 50%; }
+      @keyframes studioSpin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        .initial-loader-spinner { animation: none; }
       }
-      .glitch-hover:hover {
-        animation: glitch 0.3s cubic-bezier(.25,.46,.45,.94) both infinite;
+      .initial-loader {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        color: var(--text-muted);
+        font-family: var(--font-sans);
       }
-      .scanline-overlay {
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(
-          to bottom,
-          transparent 0%,
-          rgba(255, 0, 0, 0.03) 50%,
-          transparent 100%
-        );
-        background-size: 100% 4px;
-        pointer-events: none;
-        z-index: 50;
-        opacity: 0.5;
+      .initial-loader-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: studioSpin 0.8s linear infinite;
       }
     </style>
     <script>
@@ -130,17 +115,48 @@
         if (p === "3000" || p === "5173") {
           window.__API_BASE__ =
             location.protocol + "//" + location.hostname + ":8090";
+        } else if (window.location.pathname.indexOf("/demos/ytdown") !== -1) {
+          window.__API_BASE__ = "/demos/ytdown";
         } else {
           window.__API_BASE__ = "";
         }
       })();
     </script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
-  <body class="min-h-screen bg-studio text-zinc-100 antialiased">
-    <div id="root"></div>
-    <script type="text/babel" src="./assets/app.jsx"></script>
+  <body class="min-h-screen bg-studio text-zinc-100 antialiased selection:bg-accent selection:text-white">
+    <div id="root">
+      <div class="initial-loader">
+        <div class="flex flex-col items-center gap-3.5">
+          <div class="flex items-center gap-2">
+            <span class="inline-block h-2 w-2 rounded-full bg-accent"></span>
+            <span class="text-xs font-semibold text-zinc-100">YTDown Studio</span>
+          </div>
+          <div class="flex items-center gap-2 text-zinc-500 text-xs">
+            <div class="initial-loader-spinner"></div>
+            <span>Iniciando entorno neural…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function() {
+        var p = window.location.pathname;
+        var base = (p.indexOf("/demos/ytdown") !== -1 ? "/demos/ytdown/assets/" : "./assets/");
+        var ts = "?v=" + Date.now();
+        var s = document.createElement("script");
+        s.src = base + "app.js" + ts;
+        s.onerror = function() {
+          console.warn("app.js no disponible o con error, usando app.jsx");
+          var b = document.createElement("script");
+          b.type = "text/babel";
+          b.src = base + "app.jsx" + ts;
+          document.body.appendChild(b);
+        };
+        document.body.appendChild(s);
+      })();
+    </script>
   </body>
 </html>
