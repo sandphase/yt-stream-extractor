@@ -273,11 +273,33 @@ function App() {
 
   const trackedJobsRef = useRef(new Set());
   const autoDownloadedRef = useRef(new Set());
+  const myJobIdsRef = useRef((() => {
+    try {
+      const raw = localStorage.getItem('ytdown_my_job_ids_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return new Set(parsed.map((x) => Number(x)).filter(Boolean));
+      }
+    } catch (_) {}
+    return new Set();
+  })());
+
+  const registerMyJob = useCallback((id) => {
+    const numId = Number(id);
+    if (!numId) return;
+    trackedJobsRef.current.add(numId);
+    myJobIdsRef.current.add(numId);
+    try {
+      const arr = Array.from(myJobIdsRef.current).slice(-200);
+      localStorage.setItem('ytdown_my_job_ids_v1', JSON.stringify(arr));
+    } catch (_) {}
+  }, []);
 
   const triggerBrowserDownload = useCallback((jobId) => {
-    if (!jobId || autoDownloadedRef.current.has(jobId)) return;
-    autoDownloadedRef.current.add(jobId);
-    const dlUrl = `${apiBase()}/api/downloads/file?id=${jobId}`;
+    const numId = Number(jobId);
+    if (!numId || autoDownloadedRef.current.has(numId)) return;
+    autoDownloadedRef.current.add(numId);
+    const dlUrl = `${apiBase()}/api/downloads/file?id=${numId}`;
     const a = document.createElement('a');
     a.href = dlUrl;
     a.setAttribute('download', '');
@@ -289,18 +311,26 @@ function App() {
     }, 2000);
   }, []);
 
-  // 1. CARGA INICIAL
+  // 1. CARGA INICIAL (filtrada estrictamente a las descargas de este navegador/cliente)
   const loadHistory = useCallback(async () => {
     try {
       const data = await api('/api/history');
-      if (Array.isArray(data)) setHistory(data);
+      if (Array.isArray(data)) {
+        const mine = data.filter((item) => myJobIdsRef.current.has(Number(item.id)));
+        setHistory(mine);
+      }
     } catch (_) {}
   }, []);
 
   const loadActiveJobs = useCallback(async () => {
     try {
       const data = await api('/api/jobs/active');
-      if (Array.isArray(data)) setActiveJobs(data);
+      if (Array.isArray(data)) {
+        const mine = data.filter(
+          (job) => trackedJobsRef.current.has(Number(job.id)) || myJobIdsRef.current.has(Number(job.id))
+        );
+        setActiveJobs(mine);
+      }
     } catch (_) {}
   }, []);
 
@@ -319,21 +349,32 @@ function App() {
             const msg = JSON.parse(e.data);
             if (msg.type === 'job_update' && msg.data) {
               const d = msg.data;
+              const jobId = Number(d.id);
+              const isTrackedHere = trackedJobsRef.current.has(jobId);
+              const isMine = isTrackedHere || myJobIdsRef.current.has(jobId);
+
+              // Ignorar eventos de descargas iniciadas en otras PCs / dispositivos
+              if (!isMine) return;
+
               const st = (d.state || d.status || '').toLowerCase();
               if (st === 'completed') {
-                trackedJobsRef.current.delete(d.id);
+                trackedJobsRef.current.delete(jobId);
                 loadActiveJobs();
                 loadHistory();
-                setToast({ type: 'success', message: `¡Listo! Guardando archivo en tu navegador: ${d.title || 'Archivo multimedia'}` });
-                triggerBrowserDownload(d.id);
+                if (isTrackedHere) {
+                  setToast({ type: 'success', message: `¡Listo! Guardando archivo en tu navegador: ${d.title || 'Archivo multimedia'}` });
+                  triggerBrowserDownload(jobId);
+                }
               } else if (st === 'failed') {
-                trackedJobsRef.current.delete(d.id);
+                trackedJobsRef.current.delete(jobId);
                 loadActiveJobs();
                 loadHistory();
-                setToast({ type: 'error', message: `Error en descarga: ${d.message || 'Falló la extracción'}` });
+                if (isTrackedHere) {
+                  setToast({ type: 'error', message: `Error en descarga: ${d.message || 'Falló la extracción'}` });
+                }
               } else {
                 setActiveJobs((prev) => {
-                  const idx = prev.findIndex((j) => j.id === d.id);
+                  const idx = prev.findIndex((j) => Number(j.id) === jobId);
                   if (idx === -1) return [d, ...prev];
                   const copy = [...prev];
                   copy[idx] = { ...copy[idx], ...d };
@@ -355,13 +396,13 @@ function App() {
             const stObj = await api(`/api/status?id=${id}`);
             const st = ((stObj && (stObj.state || stObj.status)) || '').toLowerCase();
             if (st === 'completed') {
-              trackedJobsRef.current.delete(id);
+              trackedJobsRef.current.delete(Number(id));
               loadHistory();
               loadActiveJobs();
               setToast({ type: 'success', message: `¡Listo! Guardando archivo en tu navegador: ${stObj.title || 'Archivo multimedia'}` });
               triggerBrowserDownload(id);
             } else if (st === 'failed' || st === 'canceled') {
-              trackedJobsRef.current.delete(id);
+              trackedJobsRef.current.delete(Number(id));
               loadHistory();
               loadActiveJobs();
               if (st === 'failed') {
@@ -427,7 +468,7 @@ function App() {
         body: JSON.stringify(req),
       });
       if (res && res.id) {
-        trackedJobsRef.current.add(res.id);
+        registerMyJob(res.id);
         setActiveJobs((prev) => [
           {
             id: res.id,
@@ -436,10 +477,10 @@ function App() {
             progress: 8,
             message: 'Iniciando motor de extracción de alta velocidad...',
           },
-          ...prev.filter((j) => j.id !== res.id),
+          ...prev.filter((j) => Number(j.id) !== Number(res.id)),
         ]);
       }
-      setToast({ type: 'success', message: 'Extrayendo stream... La descarga a tu PC iniciará automáticamente al terminar.' });
+      setToast({ type: 'success', message: 'Extrayendo stream... La descarga a tu dispositivo iniciará automáticamente al terminar.' });
       loadActiveJobs();
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'Error al encolar la descarga.' });
@@ -460,10 +501,13 @@ function App() {
 
     setBatchLoading(true);
     try {
-      await api('/api/downloads/batch', {
+      const res = await api('/api/downloads/batch', {
         method: 'POST',
         body: JSON.stringify({ urls, format: batchFormat, quality: 'best' }),
       });
+      if (res && Array.isArray(res.ids)) {
+        res.ids.forEach((id) => registerMyJob(id));
+      }
       setToast({ type: 'success', message: `${urls.length} enlaces encolados para extracción por lotes.` });
       setBatchUrls('');
       loadActiveJobs();
@@ -478,7 +522,12 @@ function App() {
   const deleteHistoryItem = async (id) => {
     try {
       await api(`/api/history/${id}`, { method: 'DELETE' });
-      setHistory((prev) => prev.filter((item) => item.id !== id));
+      const numId = Number(id);
+      myJobIdsRef.current.delete(numId);
+      try {
+        localStorage.setItem('ytdown_my_job_ids_v1', JSON.stringify(Array.from(myJobIdsRef.current)));
+      } catch (_) {}
+      setHistory((prev) => prev.filter((item) => Number(item.id) !== numId));
       setToast({ type: 'success', message: 'Elemento eliminado de la biblioteca.' });
     } catch (err) {
       setToast({ type: 'error', message: err.message || 'No se pudo eliminar el elemento.' });
@@ -486,13 +535,15 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#07080a] text-zinc-100 flex flex-col font-sans selection:bg-rose-600 selection:text-white">
+    <div className="min-h-screen w-full max-w-[100vw] overflow-x-hidden bg-[#07080a] text-zinc-100 flex flex-col font-sans selection:bg-rose-600 selection:text-white">
       {/* TOAST FLOTANTE */}
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 animate-bounce flex items-center gap-3 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl text-xs font-semibold text-white">
-          <span className={`h-2 w-2 rounded-full ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-400'}`}></span>
-          <span>{toast.message}</span>
-          <button onClick={() => setToast(null)} className="ml-2 text-zinc-400 hover:text-white">✕</button>
+        <div className="fixed bottom-4 left-3 right-3 sm:left-auto sm:bottom-6 sm:right-6 sm:max-w-md z-50 flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-zinc-900 border border-zinc-700 shadow-2xl text-xs font-semibold text-white">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <span className={`h-2 w-2 rounded-full shrink-0 ${toast.type === 'error' ? 'bg-rose-500' : 'bg-emerald-400'}`}></span>
+            <span className="line-clamp-2 break-words">{toast.message}</span>
+          </div>
+          <button onClick={() => setToast(null)} className="ml-2 text-zinc-400 hover:text-white shrink-0">✕</button>
         </div>
       )}
 
@@ -603,7 +654,7 @@ function App() {
       )}
 
       {/* MAIN VIEW */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-8 space-y-8">
+      <main className="flex-1 max-w-6xl w-full min-w-0 mx-auto px-3 sm:px-8 py-5 sm:py-8 space-y-6 sm:space-y-8 overflow-x-hidden">
         {/* TAB 1: EXTRACTOR */}
         {page === 'new' && (
           <div className="space-y-8">
@@ -717,10 +768,10 @@ function App() {
 
             {/* CARD DE STREAM ANALIZADO */}
             {analyzed && (
-              <div className="max-w-4xl mx-auto rounded-3xl bg-[#0d0f14] border border-zinc-800 shadow-2xl p-6 sm:p-8 space-y-6 animate-fade-in">
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+              <div className="max-w-4xl w-full max-w-full min-w-0 overflow-hidden mx-auto rounded-3xl bg-[#0d0f14] border border-zinc-800 shadow-2xl p-4 sm:p-8 space-y-6 animate-fade-in">
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-6 min-w-0">
                   {/* PREVIEW THUMBNAIL */}
-                  <div className="md:col-span-5 space-y-3">
+                  <div className="md:col-span-5 space-y-3 min-w-0">
                     <div className="relative aspect-video rounded-2xl overflow-hidden bg-black border border-zinc-800 group shadow-lg">
                       <img
                         src={analyzed.thumbnail}
@@ -732,12 +783,12 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="space-y-1">
-                      <h3 className="font-bold text-white text-sm sm:text-base line-clamp-2 leading-snug">
+                    <div className="space-y-1 min-w-0">
+                      <h3 className="font-bold text-white text-sm sm:text-base line-clamp-2 break-words leading-snug">
                         {analyzed.title}
                       </h3>
-                      <div className="flex items-center gap-2 text-xs text-zinc-400">
-                        <span>{analyzed.uploader || 'Canal de YouTube'}</span>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
+                        <span className="truncate max-w-[200px]">{analyzed.uploader || 'Canal de YouTube'}</span>
                         <span>•</span>
                         <span>{(analyzed.viewCount || analyzed.view_count) ? `${Number(analyzed.viewCount || analyzed.view_count).toLocaleString()} vistas` : 'Stream activo'}</span>
                       </div>
@@ -745,32 +796,32 @@ function App() {
                   </div>
 
                   {/* MASTERING CONTROLS */}
-                  <div className="md:col-span-7 space-y-5">
+                  <div className="md:col-span-7 space-y-5 min-w-0">
                     {/* FORMAT SELECTOR PILL (AUDIO VS VIDEO) */}
-                    <div className="p-1 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center">
+                    <div className="p-1 rounded-xl bg-zinc-950 border border-zinc-800 flex items-center gap-1">
                       <button
                         type="button"
                         onClick={() => setSelectedFormat('audio')}
-                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                        className={`flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg text-[11px] sm:text-xs font-bold uppercase tracking-wide sm:tracking-wider transition-all cursor-pointer ${
                           selectedFormat === 'audio'
                             ? 'bg-rose-600 text-white shadow-md'
                             : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
-                        <MusicIcon className="w-4 h-4" />
-                        <span>Master de Audio (MP3/FLAC)</span>
+                        <MusicIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                        <span className="truncate">Audio (MP3/FLAC)</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => setSelectedFormat('video')}
-                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                        className={`flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-2.5 rounded-lg text-[11px] sm:text-xs font-bold uppercase tracking-wide sm:tracking-wider transition-all cursor-pointer ${
                           selectedFormat === 'video'
                             ? 'bg-rose-600 text-white shadow-md'
                             : 'text-zinc-400 hover:text-zinc-200'
                         }`}
                       >
-                        <VideoIcon className="w-4 h-4" />
-                        <span>Video Pro (4K/1080p)</span>
+                        <VideoIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                        <span className="truncate">Video (4K/1080p)</span>
                       </button>
                     </div>
 
@@ -904,15 +955,15 @@ function App() {
 
             {/* COLA DE TRABAJOS ACTIVOS */}
             {activeJobs.length > 0 && (
-              <div className="max-w-4xl mx-auto space-y-4">
+              <div className="max-w-4xl w-full min-w-0 mx-auto space-y-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping"></span>
-                    <span>Extracción en Curso ({activeJobs.length}) — Se guardará automáticamente en tu PC al llegar al 100%</span>
+                  <h3 className="text-xs sm:text-sm font-bold text-zinc-200 uppercase tracking-wider flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping shrink-0"></span>
+                    <span>Extracción en Curso ({activeJobs.length}) — Se guardará automáticamente al llegar al 100%</span>
                   </h3>
                 </div>
 
-                <div className="grid gap-3">
+                <div className="flex flex-col gap-3 w-full min-w-0">
                   {activeJobs.map((job) => {
                     const pct = typeof job.progress === 'number' ? Math.max(5, Math.min(100, job.progress)) : 8;
                     const spdText = job.speedMiBs
@@ -928,13 +979,13 @@ function App() {
                     return (
                       <div
                         key={job.id}
-                        className="p-5 rounded-2xl bg-[#0f1117] border border-rose-500/40 space-y-3 shadow-lg"
+                        className="w-full max-w-full min-w-0 overflow-hidden p-4 sm:p-5 rounded-2xl bg-[#0f1117] border border-rose-500/40 space-y-3 shadow-lg"
                       >
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="font-bold text-white text-xs sm:text-sm truncate">
+                        <div className="flex items-center justify-between gap-3 min-w-0">
+                          <div className="font-bold text-white text-xs sm:text-sm line-clamp-2 sm:truncate break-words min-w-0 flex-1">
                             {job.title || job.message || 'Extrayendo Stream Multimedia…'}
                           </div>
-                          <span className="px-2.5 py-1 rounded-md text-[10px] font-mono uppercase font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                          <span className="px-2.5 py-1 rounded-md text-[10px] font-mono uppercase font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 shrink-0">
                             {job.state || job.status || 'procesando'}
                           </span>
                         </div>
@@ -967,45 +1018,45 @@ function App() {
 
             {/* ARCHIVOS RECIENTES LISTOS PARA DESCARGAR EN TU PC */}
             {history.filter((item) => item.status === 'completed').length > 0 && (
-              <div className="max-w-4xl mx-auto space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
-                    <span>Archivos Extraídos Listos para Guardar en tu PC</span>
+              <div className="max-w-4xl w-full min-w-0 mx-auto space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <h3 className="text-xs sm:text-sm font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+                    <span>Archivos Extraídos Listos para Guardar</span>
                   </h3>
                   <button
                     type="button"
                     onClick={() => setPage('history')}
-                    className="text-xs text-zinc-400 hover:text-white underline cursor-pointer"
+                    className="text-xs text-zinc-400 hover:text-white underline cursor-pointer self-start sm:self-auto"
                   >
                     Ver toda la biblioteca ({history.filter((item) => item.status === 'completed').length})
                   </button>
                 </div>
 
-                <div className="grid gap-3">
+                <div className="flex flex-col gap-3 w-full min-w-0">
                   {history
                     .filter((item) => item.status === 'completed')
                     .slice(0, 6)
                     .map((item) => (
                       <div
                         key={item.id}
-                        className="p-4 rounded-2xl bg-[#0d1212] border border-emerald-500/30 hover:border-emerald-500/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all shadow-lg"
+                        className="w-full max-w-full min-w-0 overflow-hidden p-3.5 sm:p-4 rounded-2xl bg-[#0d1212] border border-emerald-500/30 hover:border-emerald-500/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4 transition-all shadow-lg"
                       >
-                        <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                          <div className="h-11 w-11 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400">
+                        <div className="flex items-start sm:items-center gap-3 w-full min-w-0 flex-1">
+                          <div className="h-10 w-10 sm:h-11 sm:w-11 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center shrink-0 text-emerald-400">
                             {item.format === 'audio' ? <MusicIcon className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="font-bold text-white text-xs sm:text-sm truncate">
+                            <div className="font-bold text-white text-xs sm:text-sm line-clamp-2 sm:truncate break-words">
                               {item.title || 'Archivo Multimedia Extraído'}
                             </div>
-                            <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-zinc-400">
+                            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mt-1 text-[11px] font-mono text-zinc-400">
                               <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 uppercase font-bold">
                                 {item.container || (item.format === 'audio' ? 'mp3' : 'mp4')}
                               </span>
                               {item.fileSize > 0 && <span>{formatBytes(item.fileSize)}</span>}
                               <span>•</span>
-                              <span className="text-emerald-400">Listo para guardar</span>
+                              <span className="text-emerald-400">Listo</span>
                             </div>
                           </div>
                         </div>
@@ -1014,10 +1065,10 @@ function App() {
                           <a
                             href={`${apiBase()}/api/downloads/file?id=${item.id}`}
                             download
-                            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold uppercase tracking-wider transition-all shadow-lg shadow-emerald-950/60"
+                            className="w-full sm:w-auto flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold uppercase tracking-wide transition-all shadow-lg shadow-emerald-950/60 text-center"
                           >
-                            <DownloadIcon className="w-4 h-4" />
-                            <span>Guardar en mi PC (.{(item.container || (item.format === 'audio' ? 'mp3' : 'mp4')).toUpperCase()})</span>
+                            <DownloadIcon className="w-4 h-4 shrink-0" />
+                            <span className="truncate">Guardar en mi PC (.{(item.container || (item.format === 'audio' ? 'mp3' : 'mp4')).toUpperCase()})</span>
                           </a>
                         </div>
                       </div>
@@ -1030,13 +1081,13 @@ function App() {
 
         {/* TAB 2: DESCARGAS POR LOTES */}
         {page === 'batch' && (
-          <div className="max-w-3xl mx-auto space-y-6">
+          <div className="max-w-3xl w-full min-w-0 mx-auto space-y-6">
             <div className="space-y-1">
               <h2 className="text-xl font-bold text-white">Extracción por Lotes (Batch Mode)</h2>
               <p className="text-xs text-zinc-400">Pega múltiples URLs de YouTube (una por línea) para descargarlas de forma secuencial.</p>
             </div>
 
-            <div className="p-6 rounded-2xl bg-[#0f1117] border border-zinc-800 space-y-4">
+            <div className="p-4 sm:p-6 rounded-2xl bg-[#0f1117] border border-zinc-800 space-y-4">
               <textarea
                 value={batchUrls}
                 onChange={(e) => setBatchUrls(e.target.value)}
@@ -1082,33 +1133,33 @@ function App() {
 
         {/* TAB 3: BIBLIOTECA / HISTORIAL */}
         {page === 'history' && (
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="max-w-4xl w-full min-w-0 mx-auto space-y-6">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-white">Mis Descargas</h2>
-                <p className="text-xs text-zinc-400">Archivos procesados y listos para guardar en tu dispositivo.</p>
+                <p className="text-xs text-zinc-400">Archivos procesados en este dispositivo y listos para guardar.</p>
               </div>
             </div>
 
             {history.length === 0 ? (
-              <div className="p-12 text-center rounded-2xl bg-[#0f1117] border border-zinc-800 text-zinc-400 space-y-3">
+              <div className="p-8 sm:p-12 text-center rounded-2xl bg-[#0f1117] border border-zinc-800 text-zinc-400 space-y-3">
                 <HistoryIcon className="w-8 h-8 mx-auto text-zinc-600" />
-                <p className="text-sm font-medium">No hay archivos descargados todavía.</p>
+                <p className="text-sm font-medium">No hay archivos descargados en este dispositivo todavía.</p>
               </div>
             ) : (
-              <div className="grid gap-3">
+              <div className="flex flex-col gap-3 w-full min-w-0">
                 {history.map((item) => (
                   <div
                     key={item.id}
-                    className="p-4 rounded-xl bg-[#0f1117] border border-zinc-800 hover:border-zinc-700 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all shadow-md"
+                    className="w-full max-w-full min-w-0 overflow-hidden p-3.5 sm:p-4 rounded-xl bg-[#0f1117] border border-zinc-800 hover:border-zinc-700 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 sm:gap-4 transition-all shadow-md"
                   >
-                    <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                      <div className="h-12 w-12 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-rose-400">
+                    <div className="flex items-start sm:items-center gap-3 w-full min-w-0 flex-1">
+                      <div className="h-10 w-10 sm:h-12 sm:w-12 rounded-lg bg-zinc-900 border border-zinc-800 flex items-center justify-center shrink-0 text-rose-400">
                         {item.format === 'audio' ? <MusicIcon className="w-5 h-5" /> : <VideoIcon className="w-5 h-5" />}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <div className="font-bold text-white text-xs sm:text-sm truncate">{item.title || 'Archivo Multimedia'}</div>
-                        <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-zinc-400">
+                        <div className="font-bold text-white text-xs sm:text-sm line-clamp-2 sm:truncate break-words">{item.title || 'Archivo Multimedia'}</div>
+                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mt-1 text-[11px] font-mono text-zinc-400">
                           <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-rose-300 uppercase font-bold">
                             {item.container || item.format || 'media'}
                           </span>
@@ -1119,19 +1170,19 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                    <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
                       <a
                         href={`${apiBase()}/api/downloads/file?id=${item.id}`}
                         download
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md"
+                        className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-md text-center"
                       >
-                        <DownloadIcon className="w-3.5 h-3.5" />
-                        <span>Guardar en mi PC</span>
+                        <DownloadIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">Guardar en mi PC</span>
                       </a>
                       <button
                         type="button"
                         onClick={() => deleteHistoryItem(item.id)}
-                        className="p-2 rounded-lg bg-zinc-800 hover:bg-rose-950 text-zinc-400 hover:text-rose-300 transition-colors cursor-pointer"
+                        className="p-2 rounded-lg bg-zinc-800 hover:bg-rose-950 text-zinc-400 hover:text-rose-300 transition-colors cursor-pointer shrink-0"
                         title="Eliminar"
                       >
                         <TrashIcon className="w-4 h-4" />
